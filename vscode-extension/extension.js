@@ -1,7 +1,7 @@
 /**
  * @summary Claude Bell — the client-side ear of the `bell` Claude Code plugin. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL) and watches the hook's signal file (~/.claude/.claude-bell-signal, appended on every Stop / permission / idle event) two ways at once — a directory fs.watch for the event-driven path and a 700 ms stat poll as the floor on network and WSL file systems — comparing the size it saw last, never the watcher's own prev/cur pair. On growth it posts "ring" to a webview view in the Panel, and the webview — which VS Code always renders on the USER's machine — synthesizes a two-tone chime with Web Audio, so no sound file and no server speakers are needed. The webview creates its AudioContext at load and tries to resume it; a context the browser keeps suspended shows an «Enable sound» button and the extension raises one toast, so a locked bell is never silent about it. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, a timestamp every 20 s) that the hook reads to skip its own OS player, so a local session rings once, not twice. The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it ringing after the user switches the Panel back to the terminal. Every step — activation, watcher arm, signal growth, ring posted, webview ready/rang/locked — is one line in the «Claude Bell» output channel, the first place to read when it is silent. Commands: claudeBell.test (chime now), claudeBell.toggle (enable/disable); a status-bar bell mirrors the state and blinks on every ring.
  * @route claude-bell extension | "no sound over SSH" · "rings twice" (marker file missing or stale) · "no sound at all" → View → Output → Claude Bell
- * @example code --install-extension claude-bell-0.1.1.vsix
+ * @example code --install-extension claude-bell-0.1.2.vsix
  */
 const vscode = require("vscode");
 const fs = require("node:fs");
@@ -190,7 +190,11 @@ async function chime(volume, why) {
   state("rang at " + new Date().toLocaleTimeString() + " (" + why + ")");
   vscode.postMessage({ type: "rang", why });
 }
-window.addEventListener("message", (e) => { if (e.data && e.data.type === "ring") chime(e.data.volume, "signal"); });
+window.addEventListener("message", (e) => {
+  if (!e.data) return;
+  if (e.data.type === "ring") chime(e.data.volume, "signal");
+  if (e.data.type === "enabled") state(e.data.value ? "enabled" : "disabled — click the bell in the status bar to turn it back on");
+});
 document.getElementById("test").addEventListener("click", () => chime(0.6, "button"));
 document.getElementById("unlock").addEventListener("click", async () => { if (await unlocked()) { state("sound enabled"); vscode.postMessage({ type: "unlocked" }); } });
 unlocked().then((ok) => { state(ok ? "ready" : "sound is locked by the browser policy — click Enable sound once"); vscode.postMessage({ type: "ready", audio: ok ? "running" : "suspended" }); });
@@ -216,6 +220,7 @@ function activate(context) {
       v.webview.options = { enableScripts: true };
       v.webview.html = html(v.webview);
       log("webview view resolved");
+      if (!cfg().get("enabled")) setTimeout(() => v.webview.postMessage({ type: "enabled", value: false }), 500);
       v.webview.onDidReceiveMessage((m) => {
         log(`webview → ${JSON.stringify(m)}`);
         if (m?.type === "ready" && pendingRings) {
@@ -243,9 +248,12 @@ function activate(context) {
 
   context.subscriptions.push(vscode.commands.registerCommand("claudeBell.test", () => ring("test command")));
   context.subscriptions.push(vscode.commands.registerCommand("claudeBell.toggle", async () => {
-    await cfg().update("enabled", !cfg().get("enabled"), vscode.ConfigurationTarget.Global);
+    const next = !cfg().get("enabled");
+    await cfg().update("enabled", next, vscode.ConfigurationTarget.Global);
     refreshStatus();
-    log(`enabled=${cfg().get("enabled")}`);
+    log(`enabled=${next}`);
+    vscode.window.setStatusBarMessage(next ? "$(bell) Claude Bell: on" : "$(bell-slash) Claude Bell: off — click the bell in the status bar to turn it back on", 4000);
+    if (view) view.webview.postMessage({ type: "enabled", value: next });
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration("claudeBell.signalFile")) watchSignal();

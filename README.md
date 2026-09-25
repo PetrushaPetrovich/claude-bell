@@ -19,6 +19,12 @@ New sessions ring right away. In an already open session type `/hooks` once so i
 
 Новые сессии звенят сразу. В уже открытой сессии один раз наберите `/hooks`, чтобы список хуков перечитался.
 
+## Over SSH or WSL / По SSH и в WSL
+
+The hook runs where Claude Code runs, so a remote host has no speakers to play into. Install the **Claude Bell** VS Code extension from this repository's releases (`vscode-extension/`): it rings inside your VS Code window on your machine, and the hook then hands every ring to it instead of the OS player.
+
+Хук работает там же, где Claude Code, и на удалённой машине ему негде играть. Поставьте расширение **Claude Bell** для VS Code из релизов этого репозитория (`vscode-extension/`): оно звенит в вашем окне VS Code на вашей машине, а хук передаёт ему каждый звонок вместо системного плеера.
+
 ## When it rings / Когда звенит
 
 - **Stop** — Claude finished its turn and waits for you. / Claude закончил ответ и ждёт вас.
