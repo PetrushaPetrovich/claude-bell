@@ -2,7 +2,7 @@
   "name": "claude-bell",
   "displayName": "Claude Bell",
   "description": "Chime in your VS Code window when Claude Code finishes its turn or waits for you. Sound plays on your machine even when Claude Code runs over SSH or in WSL.",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "publisher": "PetrushaPetrovich",
   "license": "MIT",
   "repository": {

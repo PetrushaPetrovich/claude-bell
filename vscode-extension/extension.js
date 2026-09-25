@@ -1,7 +1,7 @@
 /**
  * @summary Claude Bell — the client-side ear of the `bell` Claude Code plugin. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL) and watches the hook's signal file (~/.claude/.claude-bell-signal, appended on every Stop / permission / idle event) two ways at once — a directory fs.watch for the event-driven path and a 700 ms stat poll as the floor on network and WSL file systems — comparing the size it saw last, never the watcher's own prev/cur pair. On growth it posts "ring" to a webview view in the Panel, and the webview — which VS Code always renders on the USER's machine — synthesizes a two-tone chime with Web Audio, so no sound file and no server speakers are needed. The webview creates its AudioContext at load and tries to resume it; a context the browser keeps suspended shows an «Enable sound» button and the extension raises one toast, so a locked bell is never silent about it. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, a timestamp every 20 s) that the hook reads to skip its own OS player, so a local session rings once, not twice. The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it ringing after the user switches the Panel back to the terminal. Every step — activation, watcher arm, signal growth, ring posted, webview ready/rang/locked — is one line in the «Claude Bell» output channel, the first place to read when it is silent. Commands: claudeBell.test (chime now), claudeBell.toggle (enable/disable); a status-bar bell mirrors the state and blinks on every ring.
  * @route claude-bell extension | "no sound over SSH" · "rings twice" (marker file missing or stale) · "no sound at all" → View → Output → Claude Bell
- * @example code --install-extension claude-bell-0.1.2.vsix
+ * @example code --install-extension claude-bell-0.2.0.vsix
  */
 const vscode = require("vscode");
 const fs = require("node:fs");
@@ -70,8 +70,8 @@ function ring(why) {
     setTimeout(refreshStatus, 1500);
   }
   if (view) {
-    view.webview.postMessage({ type: "ring", volume: Number(cfg().get("volume")) });
-    log(`ring posted to webview — ${why}`);
+    view.webview.postMessage({ type: "ring", volume: Number(cfg().get("volume")), sound: String(cfg().get("sound") || "desk") });
+    log(`ring posted to webview (${cfg().get("sound")}) — ${why}`);
   } else {
     pendingRings = 1;
     log(`ring queued, view not resolved yet — revealing — ${why}`);
@@ -161,19 +161,52 @@ button{background:var(--vscode-button-background);color:var(--vscode-button-fore
 #state{opacity:.8;margin-top:6px}
 </style></head><body>
 <div>Claude Bell rings here when Claude Code finishes its turn or waits for you. Keep this view open in the Panel (any tab may be active).</div>
-<div style="margin-top:8px"><button id="test">Play test chime</button> <button id="unlock" style="display:none">Enable sound</button></div>
+<div style="margin-top:8px">
+  <select id="preset">
+    <option value="desk">Reception desk bell — one strike</option>
+    <option value="desk-double">Reception desk bell — two strikes</option>
+    <option value="soft">Soft chime (two gentle notes)</option>
+    <option value="classic">Classic two-tone</option>
+  </select>
+  <button id="test">Preview</button>
+  <button id="use">Use this sound</button>
+  <button id="unlock" style="display:none">Enable sound</button>
+</div>
 <div id="state">starting</div>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 let ctx = null;
+let current = { sound: "desk", volume: 0.6 };
 const state = (t) => { document.getElementById("state").textContent = t; };
+const sel = document.getElementById("preset");
 function ensureCtx() { if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); return ctx; }
-function tone(c, f, t0, dur, gain) {
+function tone(c, f, t0, dur, gain, attack) {
   const o = c.createOscillator(); const g = c.createGain();
   o.type = "sine"; o.frequency.value = f;
-  g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(gain, t0 + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(gain, t0 + (attack || 0.01)); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
   o.connect(g); g.connect(c.destination); o.start(t0); o.stop(t0 + dur + 0.05);
 }
+function strike(c, t0, f0, gain, decay) {
+  const parts = [[1, 1, 1], [2.0, 0.45, 0.6], [2.72, 0.3, 0.45], [4.1, 0.15, 0.3], [5.4, 0.08, 0.2]];
+  for (const [r, g, d] of parts) for (const det of [-2.5, 2.5]) {
+    const o = c.createOscillator(); o.type = "sine"; o.frequency.value = f0 * r + det;
+    const e = c.createGain();
+    e.gain.setValueAtTime(0.0001, t0); e.gain.linearRampToValueAtTime(gain * g * 0.5, t0 + 0.004); e.gain.exponentialRampToValueAtTime(0.0001, t0 + decay * d);
+    o.connect(e); e.connect(c.destination); o.start(t0); o.stop(t0 + decay * d + 0.05);
+  }
+  const n = c.createBuffer(1, Math.floor(c.sampleRate * 0.012), c.sampleRate); const d = n.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+  const src = c.createBufferSource(); src.buffer = n;
+  const hp = c.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 3000;
+  const ng = c.createGain(); ng.gain.value = gain * 0.35;
+  src.connect(hp); hp.connect(ng); ng.connect(c.destination); src.start(t0);
+}
+const presets = {
+  "desk": (c, t, v) => strike(c, t, 1850, v, 1.8),
+  "desk-double": (c, t, v) => { strike(c, t, 1850, v, 1.3); strike(c, t + 0.22, 1850, v * 0.9, 1.7); },
+  "soft": (c, t, v) => { tone(c, 660, t, 0.9, v * 0.8, 0.03); tone(c, 880, t + 0.18, 1.2, v * 0.7, 0.03); },
+  "classic": (c, t, v) => { tone(c, 880, t, 0.55, v); tone(c, 1320, t + 0.12, 0.7, v * 0.8); },
+};
 async function unlocked() {
   const c = ensureCtx();
   if (c.state === "suspended") { try { await c.resume(); } catch (e) { void e; } }
@@ -181,21 +214,23 @@ async function unlocked() {
   document.getElementById("unlock").style.display = ok ? "none" : "";
   return ok;
 }
-async function chime(volume, why) {
+async function chime(volume, why, sound) {
   if (!(await unlocked())) { state("sound is locked by the browser policy — click Enable sound once"); vscode.postMessage({ type: "locked", why }); return; }
   const c = ctx;
   const v = Math.max(0, Math.min(1, Number(volume) || 0.6)) * 0.5;
-  const t = c.currentTime;
-  tone(c, 880, t, 0.55, v); tone(c, 1320, t + 0.12, 0.7, v * 0.8);
-  state("rang at " + new Date().toLocaleTimeString() + " (" + why + ")");
-  vscode.postMessage({ type: "rang", why });
+  const name = presets[sound] ? sound : "desk";
+  presets[name](c, c.currentTime, v);
+  state("rang at " + new Date().toLocaleTimeString() + " (" + why + ", " + name + ")");
+  vscode.postMessage({ type: "rang", why, sound: name });
 }
 window.addEventListener("message", (e) => {
   if (!e.data) return;
-  if (e.data.type === "ring") chime(e.data.volume, "signal");
+  if (e.data.type === "ring") chime(e.data.volume, "signal", e.data.sound || current.sound);
+  if (e.data.type === "config") { current = { sound: e.data.sound || "desk", volume: Number(e.data.volume) || 0.6 }; sel.value = current.sound; state("sound: " + current.sound); }
   if (e.data.type === "enabled") state(e.data.value ? "enabled" : "disabled — click the bell in the status bar to turn it back on");
 });
-document.getElementById("test").addEventListener("click", () => chime(0.6, "button"));
+document.getElementById("test").addEventListener("click", () => chime(current.volume, "preview", sel.value));
+document.getElementById("use").addEventListener("click", () => { current.sound = sel.value; vscode.postMessage({ type: "setSound", value: sel.value }); state("sound saved: " + sel.value); });
 document.getElementById("unlock").addEventListener("click", async () => { if (await unlocked()) { state("sound enabled"); vscode.postMessage({ type: "unlocked" }); } });
 unlocked().then((ok) => { state(ok ? "ready" : "sound is locked by the browser policy — click Enable sound once"); vscode.postMessage({ type: "ready", audio: ok ? "running" : "suspended" }); });
 </script></body></html>`;
@@ -220,12 +255,18 @@ function activate(context) {
       v.webview.options = { enableScripts: true };
       v.webview.html = html(v.webview);
       log("webview view resolved");
-      if (!cfg().get("enabled")) setTimeout(() => v.webview.postMessage({ type: "enabled", value: false }), 500);
+      setTimeout(() => {
+        v.webview.postMessage({ type: "config", sound: String(cfg().get("sound") || "desk"), volume: Number(cfg().get("volume")) });
+        if (!cfg().get("enabled")) v.webview.postMessage({ type: "enabled", value: false });
+      }, 500);
       v.webview.onDidReceiveMessage((m) => {
         log(`webview → ${JSON.stringify(m)}`);
         if (m?.type === "ready" && pendingRings) {
           pendingRings = 0;
           ring("queued ring after view resolved");
+        }
+        if (m?.type === "setSound" && typeof m.value === "string") {
+          cfg().update("sound", m.value, vscode.ConfigurationTarget.Global).then(() => log(`sound=${m.value}`));
         }
         if (m?.type === "locked" && !lockedToastShown) {
           lockedToastShown = true;
@@ -258,6 +299,9 @@ function activate(context) {
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration("claudeBell.signalFile")) watchSignal();
     if (e.affectsConfiguration("claudeBell.enabled")) refreshStatus();
+    if ((e.affectsConfiguration("claudeBell.sound") || e.affectsConfiguration("claudeBell.volume")) && view) {
+      view.webview.postMessage({ type: "config", sound: String(cfg().get("sound") || "desk"), volume: Number(cfg().get("volume")) });
+    }
   }));
 
   watchSignal();
