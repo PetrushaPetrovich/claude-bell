@@ -54,6 +54,18 @@
           "default": true,
           "description": "Ring when Claude Code finishes its turn or waits for you."
         },
+        "claudeBell.sound": {
+          "type": "string",
+          "default": "desk",
+          "enum": ["desk", "desk-double", "soft", "classic"],
+          "enumDescriptions": [
+            "Reception desk bell, one strike",
+            "Reception desk bell, two strikes",
+            "Soft chime, two gentle notes",
+            "Classic two-tone"
+          ],
+          "description": "Which chime to play. Preview and pick in the Claude Bell panel."
+        },
         "claudeBell.volume": {
           "type": "number",
           "default": 0.6,
