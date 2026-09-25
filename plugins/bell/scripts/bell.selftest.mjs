@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * @summary Deterministic selftest of bell.mjs — drives the REAL hook as a child process under a throwaway HOME with CLAUDE_BELL_SPY as its only ear and pins the contract: rings on Stop; silent when muted (CLAUDE_BELL_ENABLED=0), on a re-prompted Stop (stop_hook_active), on a Notification of another type and on a foreign event; rings on permission_prompt and on a type added through CLAUDE_BELL_NOTIFY; resolves the OS player per platform (powershell.exe SoundPlayer · afplay · paplay) and honours CLAUDE_BELL_SOUND with its quote escaped; one chime inside the debounce window; malformed stdin exits 0; stdout stays empty on every path.
+ * @summary Deterministic selftest of bell.mjs — drives the REAL hook as a child process under a throwaway HOME with CLAUDE_BELL_SPY as its only ear and pins the contract: rings on Stop and records the ring in the stamp; silent when muted (CLAUDE_BELL_ENABLED=0), on a re-prompted Stop (stop_hook_active), on a Notification of another type and on a foreign event; rings on permission_prompt and on a type added through CLAUDE_BELL_NOTIFY; resolves the OS player per platform (powershell.exe SoundPlayer · afplay · paplay) and honours CLAUDE_BELL_SOUND with its quote escaped; one chime inside the debounce window; malformed stdin exits 0; stdout stays empty on every path.
  * @verdict Done | every scenario passed; fixture removed; exit 0
  * @verdict Blocked:assertion_failed | at least one scenario failed; fixture kept for forensics; exit 1
  * @example node plugins/bell/scripts/bell.selftest.mjs
@@ -80,7 +80,13 @@ r = fire({ hook_event_name: "PostToolUse", tool_name: "Bash", cwd: CWD });
 ok("foreign event → silent", r.code === 0 && r.lines.length === 0, JSON.stringify(r));
 
 r = fire(STOP, { CLAUDE_BELL_PLATFORM: "win32", WINDIR: "C:\\W" });
-ok("win32 → powershell.exe SoundPlayer over the stock chime, hidden window", r.lines.length === 1 && r.lines[0].cmd === "powershell.exe" && r.lines[0].args.includes("Hidden") && r.lines[0].sound === WIN_SOUND && r.lines[0].args.at(-1).includes(`'${WIN_SOUND}'`), JSON.stringify(r.lines));
+ok("win32 → absolute powershell.exe, SoundPlayer over the stock chime with the Asterisk fallback, hidden window", r.lines.length === 1 && /[\\/]System32[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/.test(r.lines[0].cmd) && r.lines[0].args.includes("Hidden") && r.lines[0].sound === WIN_SOUND && r.lines[0].args.at(-1).includes(`'${WIN_SOUND}'`) && r.lines[0].args.at(-1).includes("SystemSounds]::Asterisk"), JSON.stringify(r.lines));
+
+const stampHome = freshHome();
+r = fire(STOP, {}, stampHome);
+let stamp = null;
+try { stamp = JSON.parse(readFileSync(join(stampHome, ".claude", ".claude-bell-last"), "utf8")); } catch { stamp = null; }
+ok("stamp records the last ring as {ts,event,code,ms}", !!stamp && stamp.event === "Stop" && stamp.code === "spy" && Number.isFinite(stamp.ts), JSON.stringify(stamp));
 
 r = fire(STOP, { CLAUDE_BELL_PLATFORM: "darwin" });
 ok("darwin → afplay Glass.aiff", r.lines.length === 1 && r.lines[0].cmd === "afplay" && r.lines[0].args[0] === "/System/Library/Sounds/Glass.aiff", JSON.stringify(r.lines));
@@ -104,4 +110,4 @@ if (failures) {
   process.exit(1);
 }
 rmSync(T, { recursive: true, force: true });
-console.log("Done: bell selftest — 13 scenarios passed");
+console.log("Done: bell selftest — 14 scenarios passed");
