@@ -1,0 +1,14 @@
+{
+  "name": "claude-bell",
+  "owner": {
+    "name": "Pavel Matsuk"
+  },
+  "plugins": [
+    {
+      "name": "bell",
+      "source": "./plugins/bell",
+      "version": "1.0.0",
+      "description": "Plays a short system chime when Claude Code finishes its turn or waits for your permission. Windows, macOS, Linux; works in the terminal and in the VS Code extension."
+    }
+  ]
+}
