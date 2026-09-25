@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,6 +87,21 @@ r = fire(STOP, {}, stampHome);
 let stamp = null;
 try { stamp = JSON.parse(readFileSync(join(stampHome, ".claude", ".claude-bell-last"), "utf8")); } catch { stamp = null; }
 ok("stamp records the last ring as {ts,event,code,ms}", !!stamp && stamp.event === "Stop" && stamp.code === "spy" && Number.isFinite(stamp.ts), JSON.stringify(stamp));
+let signal = "";
+try { signal = readFileSync(join(stampHome, ".claude", ".claude-bell-signal"), "utf8"); } catch { signal = ""; }
+ok("every ring appends one JSON line to the signal file the VS Code extension polls", signal.trim().split("\n").length === 1 && JSON.parse(signal.trim()).event === "Stop", JSON.stringify(signal));
+
+const extHome = freshHome();
+writeFileSync(join(extHome, ".claude", ".claude-bell-extension"), String(Date.now()));
+r = fire(STOP, {}, extHome);
+let extStamp = null;
+try { extStamp = JSON.parse(readFileSync(join(extHome, ".claude", ".claude-bell-last"), "utf8")); } catch { extStamp = null; }
+ok("VS Code extension alive (fresh marker) → signal written, OS player skipped, stamp code extension", r.code === 0 && r.lines.length === 0 && extStamp?.code === "extension" && existsSync(join(extHome, ".claude", ".claude-bell-signal")), JSON.stringify({ lines: r.lines, extStamp }));
+
+const staleHome = freshHome();
+writeFileSync(join(staleHome, ".claude", ".claude-bell-extension"), String(Date.now() - 120000));
+r = fire(STOP, {}, staleHome);
+ok("stale marker (extension gone) → OS player rings again", r.code === 0 && r.lines.length === 1, JSON.stringify(r.lines));
 
 r = fire(STOP, { CLAUDE_BELL_PLATFORM: "darwin" });
 ok("darwin → afplay Glass.aiff", r.lines.length === 1 && r.lines[0].cmd === "afplay" && r.lines[0].args[0] === "/System/Library/Sounds/Glass.aiff", JSON.stringify(r.lines));
@@ -110,4 +125,4 @@ if (failures) {
   process.exit(1);
 }
 rmSync(T, { recursive: true, force: true });
-console.log("Done: bell selftest — 14 scenarios passed");
+console.log("Done: bell selftest — 17 scenarios passed");

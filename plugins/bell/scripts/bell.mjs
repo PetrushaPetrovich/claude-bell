@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
- * @summary The bell of the `bell` plugin — a short system chime at the two moments a human is waited for: Claude Code finished its turn (Stop; a re-prompted Stop carrying stop_hook_active is not a wait and stays silent) or stopped on a prompt only the human can answer (Notification of type permission_prompt or idle_prompt). Installed means on; CLAUDE_BELL_ENABLED=0 mutes it without uninstalling. The player is the OS's own — PowerShell System.Media.SoundPlayer on win32 behind a hidden window, with the built-in Asterisk system sound as the fallback when the file cannot be played, afplay on darwin, paplay on linux. The hook WAITS for the player to finish (about a second; the hook is registered async, so the turn is never delayed) because a child left detached dies with the hook process on some hosts — a bell that exits first rings nothing. The sound defaults to a stock system chime per platform and CLAUDE_BELL_SOUND overrides it; CLAUDE_BELL_NOTIFY (comma-separated) overrides the Notification types that ring. Rings at most once per 1500 ms via the stamp ~/.claude/.claude-bell-last, which also records the last ring's player exit code and duration — the first thing to read when «it does not ring». CLAUDE_BELL_SPY=<file> routes the resolved player command into that file instead of the speakers — the selftest's only ear. Every failure path is silent exit 0; stdout is never written, so the conversation never sees this hook.
+ * @summary The bell of the `bell` plugin — a short system chime at the two moments a human is waited for: Claude Code finished its turn (Stop; a re-prompted Stop carrying stop_hook_active is not a wait and stays silent) or stopped on a prompt only the human can answer (Notification of type permission_prompt or idle_prompt). Installed means on; CLAUDE_BELL_ENABLED=0 mutes it without uninstalling. Every ring is first appended as one JSON line to ~/.claude/.claude-bell-signal — the feed the Claude Bell VS Code extension polls to chime on the USER's machine over SSH or WSL; when that extension is alive (its marker ~/.claude/.claude-bell-extension refreshed within 60 s) the OS player below is skipped and the stamp says code "extension", so a local session rings once. Otherwise the player is the OS's own — PowerShell System.Media.SoundPlayer on win32 behind a hidden window, with the built-in Asterisk system sound as the fallback when the file cannot be played, afplay on darwin, paplay on linux. The hook WAITS for the player to finish (about a second; the hook is registered async, so the turn is never delayed) because a child left detached dies with the hook process on some hosts — a bell that exits first rings nothing. The sound defaults to a stock system chime per platform and CLAUDE_BELL_SOUND overrides it; CLAUDE_BELL_NOTIFY (comma-separated) overrides the Notification types that ring. Rings at most once per 1500 ms via the stamp ~/.claude/.claude-bell-last, which also records the last ring's player exit code and duration — the first thing to read when «it does not ring». CLAUDE_BELL_SPY=<file> routes the resolved player command into that file instead of the speakers — the selftest's only ear. Every failure path is silent exit 0; stdout is never written, so the conversation never sees this hook.
  * @route bell | "play a sound when Claude finishes" · "why is it silent" (read ~/.claude/.claude-bell-last: code 0 = the player ran, then check the output device; no file = the hook never fired, reload hooks) · node bell.mjs --play — hear the chime now
  * @verdict ring | a waiting event and the debounce window passed: the player ran to its end (or one spy line was written); the stamp holds {ts,event,code,ms}; exit 0, no stdout
  * @verdict silent | muted, stop_hook_active, another Notification type, another event, inside the debounce window, malformed stdin, or ANY error — exit 0, no stdout, nothing spawned
@@ -18,6 +18,8 @@ import { pathToFileURL } from "node:url";
 
 const DEBOUNCE_MS = 1500;
 const PLAYER_CEILING_MS = 8000;
+const MARKER_FRESH_MS = 60000;
+const SIGNAL_CAP_BYTES = 65536;
 const DEFAULT_NOTIFY_TYPES = ["permission_prompt", "idle_prompt"];
 
 /** @returns {never} */
@@ -76,6 +78,43 @@ export function playerCommand(platform, sound, env = process.env) {
 /** @returns {string} the stamp path — the last ring's record and the debounce anchor */
 const stampPath = () => join(homedir(), ".claude", ".claude-bell-last");
 
+/** @returns {string} the signal file the Claude Bell VS Code extension polls — one JSON line per ring */
+const signalPath = () => join(homedir(), ".claude", ".claude-bell-signal");
+
+/** @returns {string} the liveness marker the Claude Bell VS Code extension refreshes every 20 s */
+const markerPath = () => join(homedir(), ".claude", ".claude-bell-extension");
+
+/**
+ * @param {string} event
+ * @returns {void} appends one signal line; a file past SIGNAL_CAP_BYTES is restarted from this line
+ */
+function signalWrite(event) {
+  try {
+    mkdirSync(join(homedir(), ".claude"), { recursive: true });
+    const line = JSON.stringify({ ts: Date.now(), event }) + "\n";
+    let size = 0;
+    try {
+      size = statSync(signalPath()).size;
+    } catch {
+      size = 0;
+    }
+    if (size > SIGNAL_CAP_BYTES) writeFileSync(signalPath(), line);
+    else appendFileSync(signalPath(), line);
+  } catch {
+    void 0;
+  }
+}
+
+/** @returns {boolean} whether the Claude Bell VS Code extension refreshed its marker within MARKER_FRESH_MS — then IT rings on the user's machine and the OS player stays quiet */
+export function extensionAlive() {
+  try {
+    const t = Number(readFileSync(markerPath(), "utf8"));
+    return Number.isFinite(t) && Date.now() - t < MARKER_FRESH_MS;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * @param {object} record {ts,event,code?,ms?}
  * @returns {void}
@@ -112,6 +151,11 @@ async function ring(event) {
   const { cmd, args } = playerCommand(platform, sound, process.env);
   const t0 = Date.now();
   writeStamp({ ts: t0, event, code: "pending", ms: 0 });
+  signalWrite(event);
+  if (extensionAlive()) {
+    writeStamp({ ts: t0, event, code: "extension", ms: 0 });
+    return;
+  }
   if (process.env.CLAUDE_BELL_SPY) {
     appendFileSync(process.env.CLAUDE_BELL_SPY, JSON.stringify({ ts: t0, event, platform, sound, cmd, args }) + "\n");
     writeStamp({ ts: t0, event, code: "spy", ms: 0 });

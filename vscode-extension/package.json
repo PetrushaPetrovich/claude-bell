@@ -1,0 +1,78 @@
+{
+  "name": "claude-bell",
+  "displayName": "Claude Bell",
+  "description": "Chime in your VS Code window when Claude Code finishes its turn or waits for you. Sound plays on your machine even when Claude Code runs over SSH or in WSL.",
+  "version": "0.1.0",
+  "publisher": "PetrushaPetrovich",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PetrushaPetrovich/claude-bell"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "keywords": ["claude", "claude code", "sound", "bell", "notification"],
+  "extensionKind": ["workspace"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "claudeBell",
+          "title": "Claude Bell",
+          "icon": "media/bell.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeBell": [
+        {
+          "type": "webview",
+          "id": "claudeBell.player",
+          "name": "Claude Bell"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeBell.test",
+        "title": "Claude Bell: Play test chime"
+      },
+      {
+        "command": "claudeBell.toggle",
+        "title": "Claude Bell: Enable / Disable"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Bell",
+      "properties": {
+        "claudeBell.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ring when Claude Code finishes its turn or waits for you."
+        },
+        "claudeBell.volume": {
+          "type": "number",
+          "default": 0.6,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Chime volume, 0 to 1."
+        },
+        "claudeBell.signalFile": {
+          "type": "string",
+          "default": "",
+          "description": "Signal file the bell hook appends to. Empty means ~/.claude/.claude-bell-signal on the machine where Claude Code runs."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.0.0"
+  }
+}
