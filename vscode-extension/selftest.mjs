@@ -148,6 +148,34 @@ ok("after the unlock a ring plays", posted2.some((m) => m.type === "rang"), JSON
 dom2.window.close();
 FakeAudioContext.startSuspended = false;
 
+/* 2c. Bundled chimes and the OS player command builder. */
+for (const name of ["desk", "desk-double", "soft", "classic"]) {
+  const f = join(HERE, "media", "sounds", `${name}.wav`);
+  let okWav = false;
+  let detail = "missing";
+  if (existsSync(f)) {
+    const b = readFileSync(f);
+    const rate = b.readUInt32LE(24);
+    const bits = b.readUInt16LE(34);
+    const dataLen = b.readUInt32LE(40);
+    const seconds = dataLen / (rate * (bits / 8));
+    okWav = b.toString("ascii", 0, 4) === "RIFF" && b.toString("ascii", 8, 12) === "WAVE" && rate === 44100 && bits === 16 && seconds > 0.5 && seconds < 3;
+    detail = `${rate} Hz ${bits}-bit ${seconds.toFixed(2)} s`;
+  }
+  ok(`bundled chime ${name}.wav is a valid 44.1 kHz 16-bit WAV of sane length`, okWav, detail);
+}
+const player = require(join(HERE, "player.js"));
+const win = player.playerCommand("win32", "C:\\x\\a b.wav", 0.6, { SystemRoot: "C:\\Windows" });
+ok("win32 player: PowerShell MediaPlayer with volume 0.60, file URI, SoundPlayer fallback", /powershell\.exe$/.test(win.cmd) && win.args.includes("-Command") && win.args.at(-1).includes("MediaPlayer") && win.args.at(-1).includes("$p.Volume = 0.60") && win.args.at(-1).includes("file:///C:/x/a b.wav") && win.args.at(-1).includes("SoundPlayer"), JSON.stringify(win));
+const mac = player.playerCommand("darwin", "/tmp/a.wav", 0.25);
+ok("darwin player: afplay -v", mac.cmd === "afplay" && mac.args.join(" ") === "-v 0.25 /tmp/a.wav", JSON.stringify(mac));
+const lin = player.playerCommand("linux", "/tmp/a.wav", 0.5);
+ok("linux player: paplay --volume", lin.cmd === "paplay" && lin.args[0] === "--volume=32768" && lin.args[1] === "/tmp/a.wav", JSON.stringify(lin));
+if (process.platform === "win32") {
+  const live = spawnSync(win.cmd.replace("C:\\Windows", process.env.SystemRoot || "C:\\Windows"), player.playerCommand("win32", join(HERE, "media", "sounds", "classic.wav"), 0.01).args, { encoding: "utf8", timeout: 20000 });
+  ok("win32 player plays a bundled chime end to end (exit 0, near-silent volume)", live.status === 0, `exit ${live.status} ${String(live.stderr || "").slice(0, 120)}`);
+}
+
 /* 3. hook-install.js against a throwaway HOME. */
 const hook = require(join(HERE, "hook-install.js"));
 const H = mkdtempSync(join(tmpdir(), "claude-bell-selftest-"));
