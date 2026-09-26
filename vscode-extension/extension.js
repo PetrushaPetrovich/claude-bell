@@ -1,14 +1,17 @@
 /**
- * @summary Claude Bell — the client-side ear of the `bell` Claude Code plugin. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL) and watches the hook's signal file (~/.claude/.claude-bell-signal, appended on every Stop / permission / idle event) two ways at once — a directory fs.watch for the event-driven path and a 700 ms stat poll as the floor on network and WSL file systems — comparing the size it saw last, never the watcher's own prev/cur pair. On growth it posts "ring" to a webview view in the Panel, and the webview — which VS Code always renders on the USER's machine — synthesizes a two-tone chime with Web Audio, so no sound file and no server speakers are needed. The webview creates its AudioContext at load and tries to resume it; a context the browser keeps suspended shows an «Enable sound» button and the extension raises one toast, so a locked bell is never silent about it. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, a timestamp every 20 s) that the hook reads to skip its own OS player, so a local session rings once, not twice. The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it ringing after the user switches the Panel back to the terminal. Every step — activation, watcher arm, signal growth, ring posted, webview ready/rang/locked — is one line in the «Claude Bell» output channel, the first place to read when it is silent. Commands: claudeBell.test (chime now), claudeBell.toggle (enable/disable); a status-bar bell mirrors the state and blinks on every ring.
- * @route claude-bell extension | "no sound over SSH" · "rings twice" (marker file missing or stale) · "no sound at all" → View → Output → Claude Bell
- * @example code --install-extension claude-bell-0.3.0.vsix
+ * @summary Claude Bell — a self-contained chime for Claude Code inside VS Code. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL); at activation it installs its OWN hook into Claude Code's ~/.claude/settings.json there (hook-install.js: plain shell one-liners on Stop and on Notification idle_prompt|permission_prompt that append one JSON line to the signal file — no plugin, no node, nothing pointing into the extension folder; claudeBell.installHook=false opts out, `vscode:uninstall` removes exactly those entries) and watches that signal file (~/.claude/.claude-bell-signal) two ways at once — a directory fs.watch for the event-driven path and a 700 ms stat poll as the floor on network and WSL file systems — comparing the size it saw last, never the watcher's own prev/cur pair. On growth it posts "ring" to a webview view in the Panel, and the webview — which VS Code always renders on the USER's machine — synthesizes a two-tone chime with Web Audio, so no sound file and no server speakers are needed. The webview creates its AudioContext at load and tries to resume it; a context the browser keeps suspended shows an «Enable sound» button and the extension raises one toast, so a locked bell is never silent about it. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, a timestamp every 20 s) that the hook reads to skip its own OS player, so a local session rings once, not twice. The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it ringing after the user switches the Panel back to the terminal. Every step — activation, watcher arm, signal growth, ring posted, webview ready/rang/locked — is one line in the «Claude Bell» output channel, the first place to read when it is silent. Commands: claudeBell.test (chime now), claudeBell.toggle (enable/disable); a status-bar bell mirrors the state and blinks on every ring.
+ * @route claude-bell extension | "no sound over SSH" · "rings twice" (marker file missing or stale) · "no sound at all" → View → Output → Claude Bell · "hook not installed" → Claude Bell: Install hook into Claude Code
+ * @example code --install-extension claude-bell-0.4.0.vsix
  */
 const vscode = require("vscode");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const hookInstall = require("./hook-install.js");
 
 const POLL_MS = 700;
+const RING_DEBOUNCE_MS = 1200;
+let lastRingTs = 0;
 const HEARTBEAT_MS = 20000;
 const VIEW_ID = "claudeBell.player";
 
@@ -105,6 +108,11 @@ function ring(why) {
     log(`ring skipped (disabled) — ${why}`);
     return;
   }
+  if (Date.now() - lastRingTs < RING_DEBOUNCE_MS) {
+    log(`ring skipped (within ${RING_DEBOUNCE_MS} ms of the previous) — ${why}`);
+    return;
+  }
+  lastRingTs = Date.now();
   if (status) {
     status.text = "$(bell-dot)";
     setTimeout(refreshStatus, 1500);
@@ -126,6 +134,27 @@ function refreshStatus() {
   status.text = on ? "$(bell)" : "$(bell-slash)";
   status.tooltip = on ? "Claude Bell: on — click to disable" : "Claude Bell: off — click to enable";
   status.show();
+}
+
+/**
+ * @param {string} why
+ * @returns {void} installs or refreshes Claude Bell's own hook in Claude Code's settings when claudeBell.installHook is on; a first install raises one toast about new conversations
+ */
+function ensureHook(why) {
+  if (!cfg().get("installHook")) {
+    log(`hook install skipped (claudeBell.installHook=false) — ${why}`);
+    return;
+  }
+  const r = hookInstall.installHooks(signalPath(), log);
+  if (r.error) {
+    vscode.window.showWarningMessage(`Claude Bell: could not write the Claude Code hook into ${r.path} (${r.error}). Fix that file or add the hook by hand — see the Claude Bell README.`);
+    return;
+  }
+  if (r.changed) {
+    vscode.window.showInformationMessage("Claude Bell: hook installed into Claude Code. It takes effect in new Claude Code conversations — in an open one, type /hooks once.");
+  } else {
+    log(`hook already current — ${why}`);
+  }
 }
 
 /** @returns {void} writes the liveness marker the hook reads */
@@ -379,8 +408,26 @@ function activate(context) {
     log(`soundFile=${picked[0].fsPath}`);
     vscode.window.setStatusBarMessage(`$(bell) Claude Bell: ${path.basename(picked[0].fsPath)}`, 4000);
   }));
+  context.subscriptions.push(vscode.commands.registerCommand("claudeBell.installHook", () => {
+    const r = hookInstall.installHooks(signalPath(), log);
+    vscode.window.showInformationMessage(r.error ? `Claude Bell: hook not installed — ${r.error}` : r.changed ? `Claude Bell: hook installed into ${r.path}. New Claude Code conversations ring; in an open one type /hooks.` : `Claude Bell: hook already present in ${r.path}.`);
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand("claudeBell.removeHook", () => {
+    const r = hookInstall.removeHooks(log);
+    vscode.window.showInformationMessage(r.error ? `Claude Bell: hook not removed — ${r.error}` : r.changed ? `Claude Bell: hook removed from ${r.path}.` : `Claude Bell: no hook of ours in ${r.path}.`);
+  }));
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration("claudeBell.signalFile")) watchSignal();
+    if (e.affectsConfiguration("claudeBell.signalFile")) {
+      watchSignal();
+      ensureHook("signalFile changed");
+    }
+    if (e.affectsConfiguration("claudeBell.installHook")) {
+      if (cfg().get("installHook")) ensureHook("installHook turned on");
+      else {
+        const r = hookInstall.removeHooks(log);
+        log(`installHook turned off — ${r.changed ? "hook removed" : "nothing to remove"}`);
+      }
+    }
     if (e.affectsConfiguration("claudeBell.enabled")) refreshStatus();
     if ((e.affectsConfiguration("claudeBell.sound") || e.affectsConfiguration("claudeBell.volume") || e.affectsConfiguration("claudeBell.soundFile")) && view) {
       if (e.affectsConfiguration("claudeBell.soundFile")) applyWebviewOptions(view);
@@ -389,6 +436,7 @@ function activate(context) {
   }));
 
   watchSignal();
+  ensureHook("activation");
   beat();
   heartbeat = setInterval(beat, HEARTBEAT_MS);
   vscode.commands.executeCommand(`${VIEW_ID}.focus`, { preserveFocus: true }).then(

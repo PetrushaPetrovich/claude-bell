@@ -4,14 +4,15 @@ Chime in your VS Code window when Claude Code finishes its turn or waits for you
 
 Звук в вашем окне VS Code, когда Claude Code закончил ответ или ждёт разрешения. Звук рождается **на вашей машине**, поэтому работает при подключении по SSH и в WSL.
 
-## Requires / Нужно
+## Self-contained / Ничего больше не нужно
 
-The `bell` Claude Code plugin on the machine where Claude Code runs (the hook writes the signal this extension listens to):
+On first start the extension installs its own hook into Claude Code's user settings (`~/.claude/settings.json` on the machine where Claude Code runs): two plain shell one-liners on the **Stop** and **Notification** events that append a line to a signal file. No plugin, no Node, nothing else to install. New Claude Code conversations ring right away; in an already open one type `/hooks` once. Turn this off with `claudeBell.installHook: false`; uninstalling the extension removes the hook.
 
-```
-claude plugin marketplace add PetrushaPetrovich/claude-bell
-claude plugin install bell@claude-bell
-```
+При первом запуске расширение само ставит свой хук в настройки Claude Code (`~/.claude/settings.json` на машине, где работает Claude Code): две shell-команды на события **Stop** и **Notification**, дописывающие строку в сигнальный файл. Ни плагина, ни Node, ничего ставить не нужно. Новые беседы Claude Code звенят сразу; в уже открытой один раз наберите `/hooks`. Отключить: `claudeBell.installHook: false`; удаление расширения убирает хук.
+
+The optional `bell` Claude Code plugin from this repository does the same job for people who use Claude Code in a plain terminal without VS Code. Both installed together ring once.
+
+Необязательный плагин `bell` для Claude Code из этого репозитория делает то же для тех, кто работает с Claude Code в обычном терминале без VS Code. Вместе они не дублируют звук.
 
 ## Install / Установка
 
@@ -21,7 +22,9 @@ Download `claude-bell-<version>.vsix` from the repository releases, then in VS C
 
 ## How it works / Как устроено
 
-The plugin hook appends a line to `~/.claude/.claude-bell-signal` on every Stop / permission / idle event. The extension polls that file and tells a small webview in the Panel to play a two-tone chime with Web Audio. Webviews always render on your machine, which is why the sound reaches you over SSH. While the extension is alive it keeps `~/.claude/.claude-bell-extension` fresh, and the plugin hook then skips its own OS player, so a local session rings once.
+Claude Code runs the extension's hook when a turn ends (Stop) or when it waits for your permission or has been idle (Notification `permission_prompt` / `idle_prompt`). The hook appends a line to `~/.claude/.claude-bell-signal`. The extension watches that file and tells a small webview in the Panel to play the chime with Web Audio, or your own file. Webviews always render on your machine, which is why the sound reaches you over SSH. While the extension is alive it keeps `~/.claude/.claude-bell-extension` fresh, and the optional `bell` plugin then skips its own OS player, so nothing rings twice.
+
+Commands: **Claude Bell: Install hook into Claude Code** and **Claude Bell: Remove hook from Claude Code** redo or undo the hook by hand.
 
 ## Commands and settings / Команды и настройки
 

@@ -1,8 +1,8 @@
 {
   "name": "claude-bell",
   "displayName": "Claude Bell",
-  "description": "Chime in your VS Code window when Claude Code finishes its turn or waits for you. Sound plays on your machine even when Claude Code runs over SSH or in WSL.",
-  "version": "0.3.0",
+  "description": "Chime in your VS Code window when Claude Code finishes its turn or waits for you. Self-contained: installs its own Claude Code hook. Sound plays on your machine even when Claude Code runs over SSH or in WSL.",
+  "version": "0.4.0",
   "publisher": "PetrushaPetrovich",
   "license": "MIT",
   "repository": {
@@ -48,6 +48,14 @@
       {
         "command": "claudeBell.pickSoundFile",
         "title": "Claude Bell: Choose your own sound file"
+      },
+      {
+        "command": "claudeBell.installHook",
+        "title": "Claude Bell: Install hook into Claude Code"
+      },
+      {
+        "command": "claudeBell.removeHook",
+        "title": "Claude Bell: Remove hook from Claude Code"
       }
     ],
     "configuration": {
@@ -86,13 +94,19 @@
         "claudeBell.signalFile": {
           "type": "string",
           "default": "",
-          "description": "Signal file the bell hook appends to. Empty means ~/.claude/.claude-bell-signal on the machine where Claude Code runs."
+          "description": "Signal file the hook appends to. Empty means ~/.claude/.claude-bell-signal on the machine where Claude Code runs."
+        },
+        "claudeBell.installHook": {
+          "type": "boolean",
+          "default": true,
+          "description": "Install and keep Claude Bell's own hook in Claude Code's user settings (~/.claude/settings.json on the machine where Claude Code runs). Turn off if you manage Claude Code hooks yourself."
         }
       }
     }
   },
   "scripts": {
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies",
+    "vscode:uninstall": "node ./uninstall.js"
   },
   "devDependencies": {
     "@vscode/vsce": "^3.0.0"

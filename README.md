@@ -1,8 +1,14 @@
 # claude-bell
 
-A Claude Code plugin that plays a short system chime when Claude finishes its turn or waits for your permission. Works in the terminal and in the VS Code extension, on Windows, macOS and Linux. No dependencies.
+Two ways to get a chime when Claude Code finishes its turn or waits for your permission:
 
-Плагин для Claude Code: короткий системный звук, когда Claude закончил ответ или ждёт вашего разрешения. Работает в терминале и в расширении VS Code, на Windows, macOS и Linux. Без зависимостей.
+- **Claude Bell VS Code extension** (`vscode-extension/`, `.vsix` in the releases): self-contained, installs its own Claude Code hook, rings inside your VS Code window — also over SSH and WSL, with your own sound file if you like. If you use VS Code, this is all you need.
+- **`bell` Claude Code plugin** (below): for Claude Code in a plain terminal. Plays a system chime on the machine where Claude Code runs. No dependencies.
+
+Два способа получить звонок, когда Claude Code закончил ответ или ждёт разрешения:
+
+- **Расширение Claude Bell для VS Code** (`vscode-extension/`, файл `.vsix` в релизах): самодостаточное, само ставит хук в Claude Code, звенит в вашем окне VS Code, в том числе по SSH и в WSL, можно со своим звуковым файлом. Если вы работаете в VS Code, больше ничего не нужно.
+- **Плагин `bell` для Claude Code** (ниже): для Claude Code в обычном терминале. Системный звук на машине, где работает Claude Code. Без зависимостей.
 
 ## Install / Установка
 
