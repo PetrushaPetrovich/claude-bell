@@ -4,7 +4,7 @@ Chime in your VS Code window when Claude Code finishes its turn or waits for you
 
 Звук в вашем окне VS Code, когда Claude Code закончил ответ или ждёт разрешения. **Работает по SSH, в Remote и WSL**: звук рождается в окне VS Code на вашей машине, удалённый сервер без динамиков не помеха.
 
-![Claude Bell panel in the VS Code bottom panel, next to Terminal](media/panel.png)
+![Claude Bell panel in the VS Code bottom panel, next to Terminal](https://raw.githubusercontent.com/PetrushaPetrovich/claude-bell/main/vscode-extension/media/panel.png)
 
 The **Claude Bell** tab lives in the bottom Panel next to Terminal: pick a sound card, preview it with ▶, choose your own file, set the volume. / Вкладка **Claude Bell** живёт в нижней панели рядом с Terminal: выберите карточку звука, послушайте по ▶, подключите свой файл, задайте громкость.
 
