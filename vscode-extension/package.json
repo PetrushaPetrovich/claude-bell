@@ -1,8 +1,8 @@
 {
   "name": "claude-bell",
   "displayName": "Claude Bell",
-  "description": "Chime in your VS Code window when Claude Code finishes its turn or waits for you. Self-contained: installs its own Claude Code hook. Sound plays on your machine even when Claude Code runs over SSH or in WSL.",
-  "version": "0.5.4",
+  "description": "Chime in your VS Code window when Claude Code finishes its turn or waits for you — works over SSH, Remote and WSL, because the sound plays on your machine, not on the server. Self-contained (installs its own Claude Code hook), no telemetry, Linux included.",
+  "version": "0.5.5",
   "publisher": "PetrushaPetrovich",
   "icon": "media/icon.png",
   "license": "MIT",
@@ -13,10 +13,25 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
-  "keywords": ["claude", "claude code", "sound", "bell", "notification"],
-  "extensionKind": ["workspace"],
-  "activationEvents": ["onStartupFinished"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "claude",
+    "claude code",
+    "sound",
+    "bell",
+    "notification",
+    "ssh",
+    "remote",
+    "wsl"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./extension.js",
   "contributes": {
     "viewsContainers": {
@@ -70,7 +85,13 @@
         "claudeBell.sound": {
           "type": "string",
           "default": "desk",
-          "enum": ["desk", "desk-double", "soft", "classic", "file"],
+          "enum": [
+            "desk",
+            "desk-double",
+            "soft",
+            "classic",
+            "file"
+          ],
           "enumDescriptions": [
             "Reception desk bell, one strike",
             "Reception desk bell, two strikes",
