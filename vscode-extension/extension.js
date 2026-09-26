@@ -1,7 +1,7 @@
 /**
  * @summary Claude Bell — a self-contained chime for Claude Code inside VS Code. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL); at activation it installs its OWN hook into Claude Code's ~/.claude/settings.json there (hook-install.js: plain shell one-liners on Stop and on Notification idle_prompt|permission_prompt that append one JSON line to the signal file — no plugin, no node, nothing pointing into the extension folder; claudeBell.installHook=false opts out, `vscode:uninstall` removes exactly those entries) and watches that signal file (~/.claude/.claude-bell-signal) two ways at once — a directory fs.watch for the event-driven path and a 700 ms stat poll as the floor on network and WSL file systems — comparing the size it saw last, never the watcher's own prev/cur pair, and reading the newest line to name the reason (turn finished · waiting for permission · idle). On growth it posts "ring" to a webview view in the Panel, and the webview — which VS Code always renders on the USER's machine — plays the chosen sound: a Web Audio synthesis (desk bell, double desk bell, soft chime, two-tone) or the person's own audio file, decoded once and cached. The panel is a card per sound with its own play button, the chosen card highlighted; the header carries enabled state, hook state, the last ring with its reason, and a volume slider. The webview creates its AudioContext at load and tries to resume it; a context the browser keeps suspended shows an «Enable sound» button and the extension raises one toast, so a locked bell is never silent about it. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, a timestamp every 20 s) that the optional `bell` plugin reads to skip its own OS player, so nothing rings twice; rings inside 2500 ms of each other collapse into one (two hooks answering one event land up to two seconds apart). The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it ringing after the user switches the Panel back to the terminal. Every step — activation, hook install, watcher arm, signal growth, ring posted, webview ready/rang/locked — is one line in the «Claude Bell» output channel, the first place to read when it is silent. Commands: claudeBell.test, claudeBell.toggle, claudeBell.pickSoundFile, claudeBell.installHook, claudeBell.removeHook; a status-bar bell mirrors the state and blinks on every ring.
  * @route claude-bell extension | "no sound over SSH" · "rings twice" (marker file missing or stale) · "no sound at all" → View → Output → Claude Bell · "hook not installed" → Claude Bell: Install hook into Claude Code
- * @example code --install-extension claude-bell-0.5.6.vsix
+ * @example code --install-extension claude-bell-0.5.7.vsix
  */
 const vscode = require("vscode");
 const fs = require("node:fs");
@@ -30,6 +30,7 @@ let lastRingTs = 0;
 /** @type {fs.FSWatcher|null} */
 let dirWatcher = null;
 let lockedToastShown = false;
+let audioRunning = false;
 /** @type {"installed"|"off"|"error"|"unknown"} */
 let hookState = "unknown";
 /** @type {{ts:number, reason:string}|null} */
@@ -156,10 +157,51 @@ function ring(why, reason = "test") {
   if (view) {
     view.webview.postMessage({ type: "ring", volume: Number(cfg().get("volume")), sound: String(cfg().get("sound") || "desk"), reason, ts: lastRingTs });
     log(`ring posted to webview (${cfg().get("sound")}, ${reason}) — ${why}`);
+    if (!audioRunning) osFallback("webview audio not unlocked yet");
   } else {
+    osFallback("view not resolved");
     pendingRings = 1;
     log(`ring queued, view not resolved yet — revealing — ${why}`);
     vscode.commands.executeCommand(`${VIEW_ID}.focus`, { preserveFocus: true });
+  }
+}
+
+/**
+ * @param {string} why
+ * @returns {void} plays through the OS of the extension host while the webview's audio is still locked — only where speakers can exist (a local window); the first time it also points the person at the one click that unlocks the chosen chime
+ */
+function osFallback(why) {
+  if (vscode.env.remoteName) {
+    log(`no OS fallback on a remote host — ${why}`);
+    return;
+  }
+  const f = soundFile();
+  const useFile = f && String(cfg().get("sound")) === "file";
+  let cmd = "";
+  let args = [];
+  if (process.platform === "win32") {
+    cmd = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const ps = useFile ? `(New-Object System.Media.SoundPlayer '${f.replace(/'/g, "''")}').PlaySync()` : "[System.Media.SystemSounds]::Asterisk.Play(); Start-Sleep -Milliseconds 700";
+    args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", ps];
+  } else if (process.platform === "darwin") {
+    cmd = "afplay";
+    args = [useFile ? f : "/System/Library/Sounds/Glass.aiff"];
+  } else {
+    cmd = "paplay";
+    args = [useFile ? f : "/usr/share/sounds/freedesktop/stereo/complete.oga"];
+  }
+  try {
+    const child = require("node:child_process").spawn(cmd, args, { stdio: "ignore", windowsHide: true });
+    child.on("error", (e) => log(`OS fallback failed: ${e?.message}`));
+    log(`OS fallback played (${useFile ? path.basename(f) : "system sound"}) — ${why}`);
+  } catch (e) {
+    log(`OS fallback failed: ${e?.message}`);
+  }
+  if (!lockedToastShown) {
+    lockedToastShown = true;
+    vscode.window.showInformationMessage("Claude Bell: click the Claude Bell panel once to enable your chosen chime (a browser rule, once per window). Until then the system sound is used.", "Open Claude Bell").then((pick) => {
+      if (pick) vscode.commands.executeCommand(`${VIEW_ID}.focus`);
+    });
   }
 }
 
@@ -301,12 +343,14 @@ input[type=range]:focus-visible::-webkit-slider-thumb{outline:1px solid var(--se
 .btn:focus-visible{outline:1px solid var(--sel);outline-offset:1px}
 #unlock{display:none}
 body.locked #unlock{display:inline-block}
+body.locked #tagline{display:none}
+body.locked .dot{background:var(--warn)}
 </style></head><body>
 <div class="head">
   <div class="state">
     <span class="dot" id="dot"></span><b id="enabled">Enabled</b>
     <span class="muted" id="tagline">rings when Claude Code finishes its turn or waits for you</span>
-    <button class="btn" id="unlock">Enable sound</button>
+    <button class="btn" id="unlock" title="The browser allows sound only after a click inside this panel — once per VS Code window">Enable sound</button>
   </div>
   <div class="right">
     <span class="muted" id="hook"></span>
@@ -327,8 +371,16 @@ let ctx = null;
 let current = { sound: "desk", volume: 0.6, fileUrl: "", fileName: "", enabled: true };
 let fileBuffer = null;
 let fileBufferUrl = "";
+const RESUME_WAIT_MS = 250;
 const $ = (id) => document.getElementById(id);
-function ensureCtx() { if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); return ctx; }
+function setLockedUI(locked) { document.body.classList.toggle("locked", locked); }
+function ensureCtx() {
+  if (!ctx) {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    ctx.onstatechange = () => { const running = ctx.state === "running"; setLockedUI(!running); if (running) vscode.postMessage({ type: "unlocked" }); };
+  }
+  return ctx;
+}
 function tone(c, f, t0, dur, gain, attack) {
   const o = c.createOscillator(); const g = c.createGain();
   o.type = "sine"; o.frequency.value = f;
@@ -370,11 +422,15 @@ async function playFile(c, t0, v) {
 }
 async function unlocked() {
   const c = ensureCtx();
-  if (c.state === "suspended") { try { await c.resume(); } catch (e) { void e; } }
+  if (c.state !== "running") {
+    await Promise.race([c.resume().catch(() => {}), new Promise((r) => setTimeout(r, RESUME_WAIT_MS))]);
+  }
   const ok = c.state === "running";
-  document.body.classList.toggle("locked", !ok);
+  setLockedUI(!ok);
   return ok;
 }
+document.addEventListener("pointerdown", () => { unlocked(); }, true);
+document.addEventListener("keydown", () => { unlocked(); }, true);
 async function chime(volume, why, sound) {
   if (!(await unlocked())) { vscode.postMessage({ type: "locked", why }); return; }
   const c = ctx;
@@ -445,6 +501,9 @@ function activate(context) {
       setTimeout(pushConfig, 400);
       v.webview.onDidReceiveMessage((m) => {
         log(`webview → ${JSON.stringify(m)}`);
+        if (m?.type === "ready") audioRunning = m.audio === "running";
+        if (m?.type === "unlocked" || m?.type === "rang") audioRunning = true;
+        if (m?.type === "locked") audioRunning = false;
         if (m?.type === "ready" && pendingRings) {
           pendingRings = 0;
           ring("queued ring after view resolved");
@@ -457,14 +516,11 @@ function activate(context) {
         }
         if (m?.type === "pickFile") vscode.commands.executeCommand("claudeBell.pickSoundFile");
         if (m?.type === "fileError") vscode.window.showWarningMessage(`Claude Bell: could not play the chosen file (${m.message}). Use a .wav, .mp3 or .ogg on the machine where Claude Code runs.`);
-        if (m?.type === "locked" && !lockedToastShown) {
-          lockedToastShown = true;
-          vscode.window.showWarningMessage("Claude Bell: sound is locked until you click “Enable sound” in the Claude Bell panel once.");
-        }
       });
       v.onDidChangeVisibility(() => log(`webview visible=${v.visible}`));
       v.onDidDispose(() => {
         view = null;
+        audioRunning = false;
         log("webview view disposed");
       });
     },

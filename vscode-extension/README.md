@@ -54,6 +54,7 @@ Keep the **Claude Bell** view open in the Panel (any Panel tab may be active). I
 
 ## Silent? / Тихо?
 
+0. **One click per window.** Browsers allow sound in a panel only after a click inside it, so after VS Code starts click anywhere in the Claude Bell panel once (the header shows **Enable sound** while it is locked). Until then a local window falls back to the system sound and shows a one-time hint. / **Один клик на окно.** Браузер разрешает звук в панели только после клика внутри неё, поэтому после запуска VS Code один раз кликните в панели Claude Bell (пока звук заблокирован, в шапке видна кнопка **Enable sound**). До этого локальное окно играет системный звук и один раз показывает подсказку.
 1. Look at the bell in the status bar: a crossed bell means the extension is disabled — one click turns it back on. / Перечёркнутый колокольчик в строке состояния значит «выключено», один клик включает обратно.
 2. View → Output → choose **Claude Bell** in the dropdown: every signal, ring and skip is logged there. / В Output выберите канал **Claude Bell**: там каждая строка сигнала и каждый звонок.
 3. `~/.claude/.claude-bell-last` on the Claude Code machine shows the hook's last ring; `"code":"extension"` means the hook handed the sound to this extension. / Файл на машине Claude Code показывает последний вызов хука.
