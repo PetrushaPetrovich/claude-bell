@@ -1,7 +1,7 @@
 /**
  * @summary Claude Bell — the client-side ear of the `bell` Claude Code plugin. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL) and watches the hook's signal file (~/.claude/.claude-bell-signal, appended on every Stop / permission / idle event) two ways at once — a directory fs.watch for the event-driven path and a 700 ms stat poll as the floor on network and WSL file systems — comparing the size it saw last, never the watcher's own prev/cur pair. On growth it posts "ring" to a webview view in the Panel, and the webview — which VS Code always renders on the USER's machine — synthesizes a two-tone chime with Web Audio, so no sound file and no server speakers are needed. The webview creates its AudioContext at load and tries to resume it; a context the browser keeps suspended shows an «Enable sound» button and the extension raises one toast, so a locked bell is never silent about it. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, a timestamp every 20 s) that the hook reads to skip its own OS player, so a local session rings once, not twice. The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it ringing after the user switches the Panel back to the terminal. Every step — activation, watcher arm, signal growth, ring posted, webview ready/rang/locked — is one line in the «Claude Bell» output channel, the first place to read when it is silent. Commands: claudeBell.test (chime now), claudeBell.toggle (enable/disable); a status-bar bell mirrors the state and blinks on every ring.
  * @route claude-bell extension | "no sound over SSH" · "rings twice" (marker file missing or stale) · "no sound at all" → View → Output → Claude Bell
- * @example code --install-extension claude-bell-0.2.0.vsix
+ * @example code --install-extension claude-bell-0.3.0.vsix
  */
 const vscode = require("vscode");
 const fs = require("node:fs");
@@ -42,6 +42,46 @@ const signalPath = () => String(cfg().get("signalFile") || "") || path.join(os.h
 
 /** @returns {string} the liveness marker the hook reads */
 const markerPath = () => path.join(os.homedir(), ".claude", ".claude-bell-extension");
+
+/** @returns {string} the person's own sound file (claudeBell.soundFile) when it exists on the extension host, else "" */
+function soundFile() {
+  const p = String(cfg().get("soundFile") || "").trim();
+  if (!p) return "";
+  try {
+    return fs.statSync(p).isFile() ? p : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * @param {vscode.WebviewView} v
+ * @returns {void} grants the webview access to the folder of the person's sound file and the extension's own folder
+ */
+function applyWebviewOptions(v) {
+  const roots = [extensionUri];
+  const f = soundFile();
+  if (f) roots.push(vscode.Uri.file(path.dirname(f)));
+  v.webview.options = { enableScripts: true, localResourceRoots: roots };
+}
+
+/**
+ * @param {vscode.WebviewView} v
+ * @returns {{type:string, sound:string, volume:number, fileUrl:string, fileName:string}} the config message the webview renders from
+ */
+function configMessage(v) {
+  const f = soundFile();
+  return {
+    type: "config",
+    sound: String(cfg().get("sound") || "desk"),
+    volume: Number(cfg().get("volume")),
+    fileUrl: f ? v.webview.asWebviewUri(vscode.Uri.file(f)).toString() : "",
+    fileName: f ? path.basename(f) : "",
+  };
+}
+
+/** @type {vscode.Uri} */
+let extensionUri;
 
 /**
  * @param {string} p
@@ -154,7 +194,7 @@ function watchSignal() {
 function html(webview) {
   const nonce = String(Date.now());
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource}; media-src ${webview.cspSource};">
 <style>
 body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);padding:8px 12px;font-size:12px}
 button{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:0;padding:4px 10px;border-radius:2px;cursor:pointer}
@@ -167,18 +207,34 @@ button{background:var(--vscode-button-background);color:var(--vscode-button-fore
     <option value="desk-double">Reception desk bell — two strikes</option>
     <option value="soft">Soft chime (two gentle notes)</option>
     <option value="classic">Classic two-tone</option>
+    <option value="file" id="fileopt">Your own file (none chosen)</option>
   </select>
   <button id="test">Preview</button>
   <button id="use">Use this sound</button>
+  <button id="pick">Choose file…</button>
   <button id="unlock" style="display:none">Enable sound</button>
 </div>
 <div id="state">starting</div>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 let ctx = null;
-let current = { sound: "desk", volume: 0.6 };
+let current = { sound: "desk", volume: 0.6, fileUrl: "", fileName: "" };
+let fileBuffer = null;
+let fileBufferUrl = "";
 const state = (t) => { document.getElementById("state").textContent = t; };
 const sel = document.getElementById("preset");
+async function playFile(c, t0, v) {
+  if (!current.fileUrl) return false;
+  if (!fileBuffer || fileBufferUrl !== current.fileUrl) {
+    const res = await fetch(current.fileUrl);
+    fileBuffer = await c.decodeAudioData(await res.arrayBuffer());
+    fileBufferUrl = current.fileUrl;
+  }
+  const src = c.createBufferSource(); src.buffer = fileBuffer;
+  const g = c.createGain(); g.gain.value = Math.max(0, Math.min(1, v * 2));
+  src.connect(g); g.connect(c.destination); src.start(t0);
+  return true;
+}
 function ensureCtx() { if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); return ctx; }
 function tone(c, f, t0, dur, gain, attack) {
   const o = c.createOscillator(); const g = c.createGain();
@@ -218,19 +274,31 @@ async function chime(volume, why, sound) {
   if (!(await unlocked())) { state("sound is locked by the browser policy — click Enable sound once"); vscode.postMessage({ type: "locked", why }); return; }
   const c = ctx;
   const v = Math.max(0, Math.min(1, Number(volume) || 0.6)) * 0.5;
-  const name = presets[sound] ? sound : "desk";
-  presets[name](c, c.currentTime, v);
-  state("rang at " + new Date().toLocaleTimeString() + " (" + why + ", " + name + ")");
+  let name = presets[sound] ? sound : sound === "file" ? "file" : "desk";
+  if (name === "file") {
+    let played = false;
+    try { played = await playFile(c, c.currentTime, v); } catch (e) { vscode.postMessage({ type: "fileError", message: String(e && e.message || e) }); }
+    if (!played) { name = "desk"; presets.desk(c, c.currentTime, v); state("own file not playable — fell back to desk bell"); }
+  } else {
+    presets[name](c, c.currentTime, v);
+  }
+  state("rang at " + new Date().toLocaleTimeString() + " (" + why + ", " + (name === "file" ? current.fileName : name) + ")");
   vscode.postMessage({ type: "rang", why, sound: name });
 }
 window.addEventListener("message", (e) => {
   if (!e.data) return;
   if (e.data.type === "ring") chime(e.data.volume, "signal", e.data.sound || current.sound);
-  if (e.data.type === "config") { current = { sound: e.data.sound || "desk", volume: Number(e.data.volume) || 0.6 }; sel.value = current.sound; state("sound: " + current.sound); }
+  if (e.data.type === "config") {
+    current = { sound: e.data.sound || "desk", volume: Number(e.data.volume) || 0.6, fileUrl: e.data.fileUrl || "", fileName: e.data.fileName || "" };
+    document.getElementById("fileopt").textContent = current.fileName ? "Your own file: " + current.fileName : "Your own file (none chosen — click Choose file…)";
+    sel.value = current.sound;
+    state("sound: " + (current.sound === "file" ? current.fileName || "file (none chosen)" : current.sound));
+  }
   if (e.data.type === "enabled") state(e.data.value ? "enabled" : "disabled — click the bell in the status bar to turn it back on");
 });
 document.getElementById("test").addEventListener("click", () => chime(current.volume, "preview", sel.value));
 document.getElementById("use").addEventListener("click", () => { current.sound = sel.value; vscode.postMessage({ type: "setSound", value: sel.value }); state("sound saved: " + sel.value); });
+document.getElementById("pick").addEventListener("click", () => vscode.postMessage({ type: "pickFile" }));
 document.getElementById("unlock").addEventListener("click", async () => { if (await unlocked()) { state("sound enabled"); vscode.postMessage({ type: "unlocked" }); } });
 unlocked().then((ok) => { state(ok ? "ready" : "sound is locked by the browser policy — click Enable sound once"); vscode.postMessage({ type: "ready", audio: ok ? "running" : "suspended" }); });
 </script></body></html>`;
@@ -241,6 +309,7 @@ unlocked().then((ok) => { state(ok ? "ready" : "sound is locked by the browser p
  * @returns {void}
  */
 function activate(context) {
+  extensionUri = context.extensionUri;
   out = vscode.window.createOutputChannel("Claude Bell");
   context.subscriptions.push(out);
   log(`activate — host ${vscode.env.remoteName || "local"} · home ${os.homedir()}`);
@@ -252,11 +321,11 @@ function activate(context) {
      */
     resolveWebviewView(v) {
       view = v;
-      v.webview.options = { enableScripts: true };
+      applyWebviewOptions(v);
       v.webview.html = html(v.webview);
       log("webview view resolved");
       setTimeout(() => {
-        v.webview.postMessage({ type: "config", sound: String(cfg().get("sound") || "desk"), volume: Number(cfg().get("volume")) });
+        v.webview.postMessage(configMessage(v));
         if (!cfg().get("enabled")) v.webview.postMessage({ type: "enabled", value: false });
       }, 500);
       v.webview.onDidReceiveMessage((m) => {
@@ -268,6 +337,8 @@ function activate(context) {
         if (m?.type === "setSound" && typeof m.value === "string") {
           cfg().update("sound", m.value, vscode.ConfigurationTarget.Global).then(() => log(`sound=${m.value}`));
         }
+        if (m?.type === "pickFile") vscode.commands.executeCommand("claudeBell.pickSoundFile");
+        if (m?.type === "fileError") vscode.window.showWarningMessage(`Claude Bell: could not play the chosen file (${m.message}). Use a .wav, .mp3 or .ogg on the machine where Claude Code runs.`);
         if (m?.type === "locked" && !lockedToastShown) {
           lockedToastShown = true;
           vscode.window.showWarningMessage("Claude Bell: sound is locked until you click “Enable sound” in the Claude Bell panel once.");
@@ -296,11 +367,24 @@ function activate(context) {
     vscode.window.setStatusBarMessage(next ? "$(bell) Claude Bell: on" : "$(bell-slash) Claude Bell: off — click the bell in the status bar to turn it back on", 4000);
     if (view) view.webview.postMessage({ type: "enabled", value: next });
   }));
+  context.subscriptions.push(vscode.commands.registerCommand("claudeBell.pickSoundFile", async () => {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      openLabel: "Use as Claude Bell sound",
+      filters: { "Audio": ["wav", "mp3", "ogg", "oga", "m4a", "flac"] },
+    });
+    if (!picked || !picked[0]) return;
+    await cfg().update("soundFile", picked[0].fsPath, vscode.ConfigurationTarget.Global);
+    await cfg().update("sound", "file", vscode.ConfigurationTarget.Global);
+    log(`soundFile=${picked[0].fsPath}`);
+    vscode.window.setStatusBarMessage(`$(bell) Claude Bell: ${path.basename(picked[0].fsPath)}`, 4000);
+  }));
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration("claudeBell.signalFile")) watchSignal();
     if (e.affectsConfiguration("claudeBell.enabled")) refreshStatus();
-    if ((e.affectsConfiguration("claudeBell.sound") || e.affectsConfiguration("claudeBell.volume")) && view) {
-      view.webview.postMessage({ type: "config", sound: String(cfg().get("sound") || "desk"), volume: Number(cfg().get("volume")) });
+    if ((e.affectsConfiguration("claudeBell.sound") || e.affectsConfiguration("claudeBell.volume") || e.affectsConfiguration("claudeBell.soundFile")) && view) {
+      if (e.affectsConfiguration("claudeBell.soundFile")) applyWebviewOptions(view);
+      view.webview.postMessage(configMessage(view));
     }
   }));
 

@@ -2,7 +2,7 @@
   "name": "claude-bell",
   "displayName": "Claude Bell",
   "description": "Chime in your VS Code window when Claude Code finishes its turn or waits for you. Sound plays on your machine even when Claude Code runs over SSH or in WSL.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "PetrushaPetrovich",
   "license": "MIT",
   "repository": {
@@ -44,6 +44,10 @@
       {
         "command": "claudeBell.toggle",
         "title": "Claude Bell: Enable / Disable"
+      },
+      {
+        "command": "claudeBell.pickSoundFile",
+        "title": "Claude Bell: Choose your own sound file"
       }
     ],
     "configuration": {
@@ -57,14 +61,20 @@
         "claudeBell.sound": {
           "type": "string",
           "default": "desk",
-          "enum": ["desk", "desk-double", "soft", "classic"],
+          "enum": ["desk", "desk-double", "soft", "classic", "file"],
           "enumDescriptions": [
             "Reception desk bell, one strike",
             "Reception desk bell, two strikes",
             "Soft chime, two gentle notes",
-            "Classic two-tone"
+            "Classic two-tone",
+            "Your own file from claudeBell.soundFile"
           ],
           "description": "Which chime to play. Preview and pick in the Claude Bell panel."
+        },
+        "claudeBell.soundFile": {
+          "type": "string",
+          "default": "",
+          "description": "Your own .wav / .mp3 / .ogg to play when claudeBell.sound is \"file\". The file must live on the machine where Claude Code runs (over SSH: on the remote host). Pick it with “Choose file…” in the Claude Bell panel."
         },
         "claudeBell.volume": {
           "type": "number",
