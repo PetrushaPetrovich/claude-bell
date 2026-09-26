@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
- * @summary The bell of the `bell` plugin — a short system chime at the two moments a human is waited for: Claude Code finished its turn (Stop; a re-prompted Stop carrying stop_hook_active is not a wait and stays silent) or stopped on a prompt only the human can answer (Notification of type permission_prompt or idle_prompt). Installed means on; CLAUDE_BELL_ENABLED=0 mutes it without uninstalling. Every ring is first appended as one JSON line to ~/.claude/.claude-bell-signal — the feed the Claude Bell VS Code extension polls to chime on the USER's machine over SSH or WSL; when that extension is alive (its marker ~/.claude/.claude-bell-extension refreshed within 60 s) the OS player below is skipped and the stamp says code "extension", so a local session rings once. Otherwise the player is the OS's own — PowerShell System.Media.SoundPlayer on win32 behind a hidden window, with the built-in Asterisk system sound as the fallback when the file cannot be played, afplay on darwin, paplay on linux. The hook WAITS for the player to finish (about a second; the hook is registered async, so the turn is never delayed) because a child left detached dies with the hook process on some hosts — a bell that exits first rings nothing. The sound defaults to a stock system chime per platform and CLAUDE_BELL_SOUND overrides it; CLAUDE_BELL_NOTIFY (comma-separated) overrides the Notification types that ring. Rings at most once per 1500 ms via the stamp ~/.claude/.claude-bell-last, which also records the last ring's player exit code and duration — the first thing to read when «it does not ring». CLAUDE_BELL_SPY=<file> routes the resolved player command into that file instead of the speakers — the selftest's only ear. Every failure path is silent exit 0; stdout is never written, so the conversation never sees this hook.
+ * @summary The bell of the `bell` plugin — a short system chime at the two moments a human is waited for: Claude Code finished its turn (Stop; a re-prompted Stop carrying stop_hook_active is not a wait and stays silent) or stopped on a prompt only the human can answer (Notification of type permission_prompt or idle_prompt). Installed means on; CLAUDE_BELL_ENABLED=0 mutes it without uninstalling. Every ring is first appended as one JSON line to ~/.claude/.claude-bell-signal — the feed the Claude Bell VS Code extension polls to chime on the USER's machine over SSH or WSL; when that extension is alive (its marker ~/.claude/.claude-bell-extension refreshed within 60 s) the OS player below is skipped and the stamp says code "extension", so a local session rings once; when the extension has also installed its own hook into ~/.claude/settings.json (entries carrying the claude-bell token) that hook already writes the signal line, so this plugin writes nothing at all and the stamp says code "extension-hook" — one event, one line, one ring. Otherwise the player is the OS's own — PowerShell System.Media.SoundPlayer on win32 behind a hidden window, with the built-in Asterisk system sound as the fallback when the file cannot be played, afplay on darwin, paplay on linux. The hook WAITS for the player to finish (about a second; the hook is registered async, so the turn is never delayed) because a child left detached dies with the hook process on some hosts — a bell that exits first rings nothing. The sound defaults to a stock system chime per platform and CLAUDE_BELL_SOUND overrides it; CLAUDE_BELL_NOTIFY (comma-separated) overrides the Notification types that ring. Rings at most once per 1500 ms via the stamp ~/.claude/.claude-bell-last, which also records the last ring's player exit code and duration — the first thing to read when «it does not ring». CLAUDE_BELL_SPY=<file> routes the resolved player command into that file instead of the speakers — the selftest's only ear. Every failure path is silent exit 0; stdout is never written, so the conversation never sees this hook.
  * @route bell | "play a sound when Claude finishes" · "why is it silent" (read ~/.claude/.claude-bell-last: code 0 = the player ran, then check the output device; no file = the hook never fired, reload hooks) · node bell.mjs --play — hear the chime now
  * @verdict ring | a waiting event and the debounce window passed: the player ran to its end (or one spy line was written); the stamp holds {ts,event,code,ms}; exit 0, no stdout
  * @verdict silent | muted, stop_hook_active, another Notification type, another event, inside the debounce window, malformed stdin, or ANY error — exit 0, no stdout, nothing spawned
@@ -105,6 +105,16 @@ function signalWrite(event) {
   }
 }
 
+/** @returns {boolean} whether the Claude Bell VS Code extension has installed its OWN hook into ~/.claude/settings.json (entries carrying the claude-bell token) — then that hook already writes the signal line and this plugin must not write a second one */
+export function extensionHookInstalled() {
+  try {
+    const s = JSON.parse(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8"));
+    return JSON.stringify(s?.hooks || {}).includes("claude-bell");
+  } catch {
+    return false;
+  }
+}
+
 /** @returns {boolean} whether the Claude Bell VS Code extension refreshed its marker within MARKER_FRESH_MS — then IT rings on the user's machine and the OS player stays quiet */
 export function extensionAlive() {
   try {
@@ -151,6 +161,10 @@ async function ring(event) {
   const { cmd, args } = playerCommand(platform, sound, process.env);
   const t0 = Date.now();
   writeStamp({ ts: t0, event, code: "pending", ms: 0 });
+  if (extensionAlive() && extensionHookInstalled()) {
+    writeStamp({ ts: t0, event, code: "extension-hook", ms: 0 });
+    return;
+  }
   signalWrite(event);
   if (extensionAlive()) {
     writeStamp({ ts: t0, event, code: "extension", ms: 0 });

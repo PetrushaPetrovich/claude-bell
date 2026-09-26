@@ -98,6 +98,14 @@ let extStamp = null;
 try { extStamp = JSON.parse(readFileSync(join(extHome, ".claude", ".claude-bell-last"), "utf8")); } catch { extStamp = null; }
 ok("VS Code extension alive (fresh marker) → signal written, OS player skipped, stamp code extension", r.code === 0 && r.lines.length === 0 && extStamp?.code === "extension" && existsSync(join(extHome, ".claude", ".claude-bell-signal")), JSON.stringify({ lines: r.lines, extStamp }));
 
+const hookHome = freshHome();
+writeFileSync(join(hookHome, ".claude", ".claude-bell-extension"), String(Date.now()));
+writeFileSync(join(hookHome, ".claude", "settings.json"), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: ": claude-bell; printf x" }] }] } }));
+r = fire(STOP, {}, hookHome);
+let hookStamp = null;
+try { hookStamp = JSON.parse(readFileSync(join(hookHome, ".claude", ".claude-bell-last"), "utf8")); } catch { hookStamp = null; }
+ok("extension alive AND its own hook installed → plugin writes no signal line and no OS sound (stamp code extension-hook)", r.code === 0 && r.lines.length === 0 && hookStamp?.code === "extension-hook" && !existsSync(join(hookHome, ".claude", ".claude-bell-signal")), JSON.stringify({ lines: r.lines, hookStamp }));
+
 const staleHome = freshHome();
 writeFileSync(join(staleHome, ".claude", ".claude-bell-extension"), String(Date.now() - 120000));
 r = fire(STOP, {}, staleHome);
@@ -125,4 +133,4 @@ if (failures) {
   process.exit(1);
 }
 rmSync(T, { recursive: true, force: true });
-console.log("Done: bell selftest — 17 scenarios passed");
+console.log("Done: bell selftest — 18 scenarios passed");

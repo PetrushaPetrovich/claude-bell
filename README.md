@@ -54,7 +54,7 @@ Default sounds: `C:\Windows\Media\Windows Notify.wav`, `/System/Library/Sounds/G
 Hear it now / Послушать сейчас:
 
 ```
-node ~/.claude/plugins/cache/claude-bell/bell/1.1.0/scripts/bell.mjs --play
+node ~/.claude/plugins/cache/claude-bell/bell/1.1.1/scripts/bell.mjs --play
 ```
 
 ## Uninstall / Удаление
