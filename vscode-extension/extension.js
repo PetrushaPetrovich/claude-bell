@@ -1,7 +1,7 @@
 /**
  * @summary Claude Bell — a self-contained chime for Claude Code inside VS Code. In a LOCAL window every ring goes through the OS player (player.js: WPF MediaPlayer via PowerShell, afplay, paplay — with volume, no user gesture needed) playing the bundled WAVs rendered from the panel's own formulas (media/sounds, scripts/render-chimes.mjs) or the person's own file; the panel then only shows the ring and serves settings and previews. In a REMOTE window (SSH, WSL) the server has no speakers, so the ring is played by the panel's webview on the person's machine, which the browser keeps muted until one click inside the panel — the header shows Enable sound and a toast points there once. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL); at activation it installs its OWN hook into Claude Code's ~/.claude/settings.json there (hook-install.js: plain shell one-liners on Stop and on Notification idle_prompt|permission_prompt that append one JSON line to the signal file — no plugin, no node, nothing pointing into the extension folder; claudeBell.installHook=false opts out, `vscode:uninstall` removes exactly those entries) and watches that signal file (~/.claude/.claude-bell-signal) two ways at once — a directory fs.watch for the event-driven path and a 700 ms stat poll as the floor on network and WSL file systems — comparing the size it saw last, never the watcher's own prev/cur pair, and reading the newest line to name the reason (turn finished · waiting for permission · idle). On growth it posts "ring" to a webview view in the Panel, and the webview — which VS Code always renders on the USER's machine — plays the chosen sound: a Web Audio synthesis (desk bell, double desk bell, soft chime, two-tone) or the person's own audio file, decoded once and cached. The panel is a card per sound with its own play button, the chosen card highlighted; the header carries enabled state, hook state, the last ring with its reason, and a volume slider. The webview creates its AudioContext at load and tries to resume it; a context the browser keeps suspended shows an «Enable sound» button and the extension raises one toast, so a locked bell is never silent about it. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, a timestamp every 20 s) that the optional `bell` plugin reads to skip its own OS player, so nothing rings twice; rings inside 2500 ms of each other collapse into one (two hooks answering one event land up to two seconds apart). The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it ringing after the user switches the Panel back to the terminal. Every step — activation, hook install, watcher arm, signal growth, ring posted, webview ready/rang/locked — is one line in the «Claude Bell» output channel, the first place to read when it is silent. Commands: claudeBell.test, claudeBell.toggle, claudeBell.pickSoundFile, claudeBell.installHook, claudeBell.removeHook; a status-bar bell mirrors the state and blinks on every ring.
  * @route claude-bell extension | "no sound over SSH" · "rings twice" (marker file missing or stale) · "no sound at all" → View → Output → Claude Bell · "hook not installed" → Claude Bell: Install hook into Claude Code
- * @example code --install-extension claude-bell-0.6.0.vsix
+ * @example code --install-extension claude-bell-0.7.0.vsix
  */
 const vscode = require("vscode");
 const fs = require("node:fs");
@@ -38,6 +38,9 @@ let audioRunning = false;
 let hookState = "unknown";
 /** @type {{ts:number, reason:string}|null} */
 let lastRing = null;
+let storageDir = "";
+let transcodePending = false;
+let transcodeErrorShown = false;
 
 /**
  * @param {string} line
@@ -64,6 +67,70 @@ function soundFile() {
     return fs.statSync(p).isFile() ? p : "";
   } catch {
     return "";
+  }
+}
+
+/** @returns {string} the cached mono WAV the person's own file is transcoded into */
+const ownSoundWav = () => path.join(storageDir, "own-sound.wav");
+
+/** @returns {string} the sidecar naming the source the cache was made from */
+const ownSoundMeta = () => path.join(storageDir, "own-sound.json");
+
+/** @returns {string} the cached WAV when it was made from the CURRENT own file (same path, size and mtime), else "" */
+function ownSoundReady() {
+  const f = soundFile();
+  if (!f || !storageDir) return "";
+  try {
+    const meta = JSON.parse(fs.readFileSync(ownSoundMeta(), "utf8"));
+    const st = fs.statSync(f);
+    if (meta.source === f && meta.size === st.size && meta.mtimeMs === st.mtimeMs && fs.statSync(ownSoundWav()).isFile()) return ownSoundWav();
+  } catch {
+    void 0;
+  }
+  return "";
+}
+
+/**
+ * @param {string} why
+ * @returns {void} asks the panel to decode the person's own file into a normalized mono WAV (the browser decodes every format it plays; no gesture is needed for decoding); deferred until the panel exists
+ */
+function requestTranscode(why) {
+  const f = soundFile();
+  if (!f) return;
+  if (ownSoundReady()) {
+    log(`own sound cache current — ${why}`);
+    return;
+  }
+  if (!view) {
+    transcodePending = true;
+    log(`transcode deferred until the panel exists — ${why}`);
+    vscode.commands.executeCommand(`${VIEW_ID}.focus`, { preserveFocus: true });
+    return;
+  }
+  transcodePending = false;
+  applyWebviewOptions(view);
+  view.webview.postMessage({ type: "transcode", url: view.webview.asWebviewUri(vscode.Uri.file(f)).toString(), name: path.basename(f) });
+  log(`transcode requested: ${f} — ${why}`);
+}
+
+/**
+ * @param {{base64:string, seconds:number, name:string}} m the panel's transcoded WAV
+ * @returns {void} writes the cache and its sidecar bound to the source file's path, size and mtime
+ */
+function saveTranscoded(m) {
+  const f = soundFile();
+  if (!f || !storageDir) return;
+  try {
+    fs.mkdirSync(storageDir, { recursive: true });
+    const bytes = Buffer.from(String(m.base64 || ""), "base64");
+    if (bytes.length < 44 || bytes.toString("ascii", 0, 4) !== "RIFF") throw new Error("not a WAV");
+    fs.writeFileSync(ownSoundWav(), bytes);
+    const st = fs.statSync(f);
+    fs.writeFileSync(ownSoundMeta(), JSON.stringify({ source: f, size: st.size, mtimeMs: st.mtimeMs, seconds: Number(m.seconds) || 0, savedAt: Date.now() }));
+    log(`own sound cached: ${path.basename(f)} → own-sound.wav (${(Number(m.seconds) || 0).toFixed(2)} s, ${Math.round(bytes.length / 1024)} KB)`);
+    vscode.window.setStatusBarMessage(`$(bell) Claude Bell: ${path.basename(f)} ready (${(Number(m.seconds) || 0).toFixed(1)} s)`, 4000);
+  } catch (e) {
+    log(`own sound cache write failed: ${e?.message}`);
   }
 }
 
@@ -105,6 +172,7 @@ function configMessage(v) {
     volume: Number(cfg().get("volume")),
     fileUrl: f ? v.webview.asWebviewUri(vscode.Uri.file(f)).toString() : "",
     fileName: f ? path.basename(f) : "",
+    fileReady: !!ownSoundReady(),
     hook: hookState,
     host: vscode.env.remoteName || "local",
     local: !vscode.env.remoteName,
@@ -176,7 +244,7 @@ function ring(why, reason = "test") {
   const sound = String(cfg().get("sound") || "desk");
   const volume = Number(cfg().get("volume"));
   if (!vscode.env.remoteName) {
-    const file = sound === "file" ? soundFile() || bundledSound("desk") : bundledSound(sound);
+    const file = sound === "file" ? ownSoundReady() || soundFile() || bundledSound("desk") : bundledSound(sound);
     if (file) {
       player.play(file, volume, log);
       log(`OS player: ${path.basename(file)} at volume ${volume} (${reason}) — ${why}`);
@@ -432,6 +500,29 @@ async function playFile(c, t0, v) {
   src.connect(g); g.connect(c.destination); src.start(t0);
   return true;
 }
+async function transcode(url, name) {
+  try {
+    const res = await fetch(url); const bytes = await res.arrayBuffer();
+    const Off = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const dec = Off ? new Off(1, 44100, 44100) : ensureCtx();
+    const buf = await dec.decodeAudioData(bytes);
+    const rate = buf.sampleRate; const n = buf.length; const ch = buf.numberOfChannels;
+    const mono = new Float32Array(n);
+    for (let c = 0; c < ch; c++) { const d = buf.getChannelData(c); for (let i = 0; i < n; i++) mono[i] += d[i] / ch; }
+    let end = n; while (end > 1 && Math.abs(mono[end - 1]) < 0.002) end--;
+    end = Math.min(end + Math.floor(rate * 0.05), n, Math.floor(rate * 8));
+    let start = 0; while (start < end - 1 && Math.abs(mono[start]) < 0.002) start++;
+    start = Math.max(0, start - Math.floor(rate * 0.01));
+    let peak = 0; for (let i = start; i < end; i++) peak = Math.max(peak, Math.abs(mono[i]));
+    const norm = peak > 0 ? 0.9 / peak : 1;
+    const len = end - start; const out = new DataView(new ArrayBuffer(44 + len * 2));
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, "RIFF"); out.setUint32(4, 36 + len * 2, true); str(8, "WAVE"); str(12, "fmt "); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, rate, true); out.setUint32(28, rate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); str(36, "data"); out.setUint32(40, len * 2, true);
+    for (let i = 0; i < len; i++) out.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, Math.round(mono[start + i] * norm * 32767))), true);
+    const u8 = new Uint8Array(out.buffer); let bin = ""; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    vscode.postMessage({ type: "transcoded", name, base64: btoa(bin), seconds: len / rate, rate });
+  } catch (e) { vscode.postMessage({ type: "transcodeError", name, message: String(e && e.message || e) }); }
+}
 async function unlocked() {
   const c = ensureCtx();
   if (c.state !== "running") {
@@ -469,7 +560,7 @@ function render() {
   $("hook").textContent = current.hook === "installed" ? "hook: installed" : current.hook === "off" ? "hook: managed by you" : current.hook === "error" ? "hook: not installed" : "";
   $("hook").className = current.hook === "error" ? "" : "muted";
   $("last").textContent = current.lastRing ? "last ring " + fmt(current.lastRing.ts) + " · " + current.lastRing.reason : "no rings yet";
-  $("fileName").textContent = current.fileName || "No file chosen";
+  $("fileName").textContent = current.fileName ? current.fileName + (current.fileReady ? "" : " (preparing…)") : "No file chosen";
   $("fileName").classList.toggle("muted", !current.fileName);
   $("vol").value = Math.round((Number(current.volume) || 0.6) * 100);
   document.querySelectorAll(".card").forEach((c) => c.classList.toggle("on", c.dataset.s === current.sound));
@@ -478,6 +569,7 @@ window.addEventListener("message", (e) => {
   const m = e.data; if (!m) return;
   if (m.type === "ring") { current.lastRing = { ts: m.ts || Date.now(), reason: m.reason || "signal" }; render(); chime(m.volume, "signal", m.sound || current.sound); }
   if (m.type === "ringInfo") { current.lastRing = { ts: m.ts || Date.now(), reason: m.reason || "signal" }; render(); }
+  if (m.type === "transcode") transcode(m.url, m.name);
   if (m.type === "config") { current = { ...current, ...m }; render(); }
 });
 document.querySelectorAll("[data-play]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); chime(current.volume, "preview", b.dataset.play); }));
@@ -501,6 +593,12 @@ unlocked().then((ok) => vscode.postMessage({ type: "ready", audio: ok ? "running
  */
 function activate(context) {
   extensionUri = context.extensionUri;
+  storageDir = context.globalStorageUri.fsPath;
+  try {
+    fs.mkdirSync(storageDir, { recursive: true });
+  } catch {
+    void 0;
+  }
   out = vscode.window.createOutputChannel("Claude Bell");
   context.subscriptions.push(out);
   log(`activate — host ${vscode.env.remoteName || "local"} · home ${os.homedir()}`);
@@ -518,9 +616,23 @@ function activate(context) {
       setTimeout(pushConfig, 400);
       v.webview.onDidReceiveMessage((m) => {
         log(`webview → ${JSON.stringify(m)}`);
-        if (m?.type === "ready") audioRunning = m.audio === "running";
+        if (m?.type === "ready") {
+          audioRunning = m.audio === "running";
+          if (transcodePending || (soundFile() && !ownSoundReady())) requestTranscode("panel ready");
+        }
         if (m?.type === "unlocked" || m?.type === "rang") audioRunning = true;
         if (m?.type === "locked") audioRunning = false;
+        if (m?.type === "transcoded") {
+          saveTranscoded(m);
+          pushConfig();
+        }
+        if (m?.type === "transcodeError") {
+          log(`transcode failed for ${m.name}: ${m.message}`);
+          if (!transcodeErrorShown) {
+            transcodeErrorShown = true;
+            vscode.window.showWarningMessage(`Claude Bell: could not decode ${m.name} (${m.message}). The original file is played as is; use .wav, .mp3, .ogg or .flac.`);
+          }
+        }
         if (m?.type === "ready" && pendingRings) {
           pendingRings = 0;
           ring("queued ring after view resolved");
@@ -569,6 +681,7 @@ function activate(context) {
     await cfg().update("sound", "file", vscode.ConfigurationTarget.Global);
     log(`soundFile=${picked[0].fsPath}`);
     vscode.window.setStatusBarMessage(`$(bell) Claude Bell: ${path.basename(picked[0].fsPath)}`, 4000);
+    requestTranscode("file picked");
   }));
   context.subscriptions.push(vscode.commands.registerCommand("claudeBell.installHook", () => {
     const r = hookInstall.installHooks(signalPath(), log);
@@ -596,12 +709,16 @@ function activate(context) {
       }
     }
     if (e.affectsConfiguration("claudeBell.enabled")) refreshStatus();
-    if (e.affectsConfiguration("claudeBell.soundFile") && view) applyWebviewOptions(view);
+    if (e.affectsConfiguration("claudeBell.soundFile")) {
+      if (view) applyWebviewOptions(view);
+      requestTranscode("soundFile changed");
+    }
     if (e.affectsConfiguration("claudeBell")) pushConfig();
   }));
 
   watchSignal();
   ensureHook("activation");
+  if (soundFile() && !ownSoundReady()) transcodePending = true;
   beat();
   heartbeat = setInterval(beat, HEARTBEAT_MS);
   vscode.commands.executeCommand(`${VIEW_ID}.focus`, { preserveFocus: true }).then(

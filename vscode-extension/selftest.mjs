@@ -120,6 +120,45 @@ await tick();
 ok("disabled state is visible in the header", doc.getElementById("enabled").textContent === "Disabled" && doc.body.classList.contains("off"));
 dom.window.close();
 
+/* 2a. Transcoding the person's own file: decode → mono → trim silence → normalize → 16-bit WAV, posted back. */
+{
+  const posted3 = [];
+  const dom3 = new JSDOM(page, { runScripts: "outside-only", pretendToBeVisual: true });
+  const w3 = dom3.window;
+  w3.acquireVsCodeApi = () => ({ postMessage: (m) => posted3.push(m) });
+  w3.AudioContext = FakeAudioContext;
+  w3.fetch = async () => ({ arrayBuffer: async () => new ArrayBuffer(16) });
+  const rate = 44100;
+  const len = Math.floor(rate * 2.0);
+  const left = new Float32Array(len);
+  const right = new Float32Array(len);
+  for (let i = Math.floor(rate * 0.5); i < Math.floor(rate * 1.0); i++) {
+    const s = 0.25 * Math.sin((2 * Math.PI * 440 * i) / rate);
+    left[i] = s;
+    right[i] = s;
+  }
+  w3.OfflineAudioContext = class { constructor() {} async decodeAudioData() { return { sampleRate: rate, length: len, numberOfChannels: 2, getChannelData: (c) => (c === 0 ? left : right) }; } };
+  w3.eval(script);
+  await new Promise((r) => setTimeout(r, 50));
+  w3.postMessage({ type: "transcode", url: "vscode-resource:/x/own.mp3", name: "own.mp3" }, "*");
+  await new Promise((r) => setTimeout(r, 400));
+  const t = posted3.find((m) => m.type === "transcoded");
+  let hdr = null;
+  if (t) {
+    const b = Buffer.from(t.base64, "base64");
+    hdr = { riff: b.toString("ascii", 0, 4), wave: b.toString("ascii", 8, 12), channels: b.readUInt16LE(22), rate: b.readUInt32LE(24), bits: b.readUInt16LE(34), seconds: b.readUInt32LE(40) / (b.readUInt32LE(24) * 2), peak: Math.max(...Array.from({ length: Math.min(2000, (b.length - 44) / 2) }, (_, i) => Math.abs(b.readInt16LE(44 + Math.floor(((b.length - 44) / 2 / 2000) * i) * 2)))) / 32767 };
+  }
+  ok("own file is transcoded to a mono 16-bit 44.1 kHz WAV", !!hdr && hdr.riff === "RIFF" && hdr.wave === "WAVE" && hdr.channels === 1 && hdr.rate === rate && hdr.bits === 16, JSON.stringify(hdr || posted3));
+  ok("silence around the sound is trimmed (2.0 s source with 0.5 s of sound → ≈0.56 s)", !!hdr && hdr.seconds > 0.5 && hdr.seconds < 0.7, hdr ? `${hdr.seconds.toFixed(3)} s` : "no wav");
+  ok("peak is normalized to about 0.9", !!hdr && hdr.peak > 0.8 && hdr.peak <= 0.91, hdr ? hdr.peak.toFixed(3) : "no wav");
+  w3.OfflineAudioContext = class { constructor() {} async decodeAudioData() { throw new Error("Unable to decode audio data"); } };
+  posted3.length = 0;
+  w3.postMessage({ type: "transcode", url: "vscode-resource:/x/bad.bin", name: "bad.bin" }, "*");
+  await new Promise((r) => setTimeout(r, 300));
+  ok("an undecodable file reports transcodeError with the browser's message", posted3.some((m) => m.type === "transcodeError" && /decode/i.test(m.message)), JSON.stringify(posted3));
+  dom3.window.close();
+}
+
 /* 2b. The browser's autoplay rule: a suspended AudioContext whose resume() never settles until a click. */
 FakeAudioContext.startSuspended = true;
 gestureSeen = false;
