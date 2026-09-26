@@ -1,7 +1,7 @@
 /**
- * @summary Claude Bell — a self-contained chime for Claude Code inside VS Code. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL); at activation it installs its OWN hook into Claude Code's ~/.claude/settings.json there (hook-install.js: plain shell one-liners on Stop and on Notification idle_prompt|permission_prompt that append one JSON line to the signal file — no plugin, no node, nothing pointing into the extension folder; claudeBell.installHook=false opts out, `vscode:uninstall` removes exactly those entries) and watches that signal file (~/.claude/.claude-bell-signal) two ways at once — a directory fs.watch for the event-driven path and a 700 ms stat poll as the floor on network and WSL file systems — comparing the size it saw last, never the watcher's own prev/cur pair. On growth it posts "ring" to a webview view in the Panel, and the webview — which VS Code always renders on the USER's machine — synthesizes a two-tone chime with Web Audio, so no sound file and no server speakers are needed. The webview creates its AudioContext at load and tries to resume it; a context the browser keeps suspended shows an «Enable sound» button and the extension raises one toast, so a locked bell is never silent about it. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, a timestamp every 20 s) that the hook reads to skip its own OS player, so a local session rings once, not twice. The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it ringing after the user switches the Panel back to the terminal. Every step — activation, watcher arm, signal growth, ring posted, webview ready/rang/locked — is one line in the «Claude Bell» output channel, the first place to read when it is silent. Commands: claudeBell.test (chime now), claudeBell.toggle (enable/disable); a status-bar bell mirrors the state and blinks on every ring.
+ * @summary Claude Bell — a self-contained chime for Claude Code inside VS Code. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL); at activation it installs its OWN hook into Claude Code's ~/.claude/settings.json there (hook-install.js: plain shell one-liners on Stop and on Notification idle_prompt|permission_prompt that append one JSON line to the signal file — no plugin, no node, nothing pointing into the extension folder; claudeBell.installHook=false opts out, `vscode:uninstall` removes exactly those entries) and watches that signal file (~/.claude/.claude-bell-signal) two ways at once — a directory fs.watch for the event-driven path and a 700 ms stat poll as the floor on network and WSL file systems — comparing the size it saw last, never the watcher's own prev/cur pair, and reading the newest line to name the reason (turn finished · waiting for permission · idle). On growth it posts "ring" to a webview view in the Panel, and the webview — which VS Code always renders on the USER's machine — plays the chosen sound: a Web Audio synthesis (desk bell, double desk bell, soft chime, two-tone) or the person's own audio file, decoded once and cached. The panel is a card per sound with its own play button, the chosen card highlighted; the header carries enabled state, hook state, the last ring with its reason, and a volume slider. The webview creates its AudioContext at load and tries to resume it; a context the browser keeps suspended shows an «Enable sound» button and the extension raises one toast, so a locked bell is never silent about it. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, a timestamp every 20 s) that the optional `bell` plugin reads to skip its own OS player, so nothing rings twice; rings inside 1200 ms of each other collapse into one. The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it ringing after the user switches the Panel back to the terminal. Every step — activation, hook install, watcher arm, signal growth, ring posted, webview ready/rang/locked — is one line in the «Claude Bell» output channel, the first place to read when it is silent. Commands: claudeBell.test, claudeBell.toggle, claudeBell.pickSoundFile, claudeBell.installHook, claudeBell.removeHook; a status-bar bell mirrors the state and blinks on every ring.
  * @route claude-bell extension | "no sound over SSH" · "rings twice" (marker file missing or stale) · "no sound at all" → View → Output → Claude Bell · "hook not installed" → Claude Bell: Install hook into Claude Code
- * @example code --install-extension claude-bell-0.4.0.vsix
+ * @example code --install-extension claude-bell-0.5.0.vsix
  */
 const vscode = require("vscode");
 const fs = require("node:fs");
@@ -10,9 +10,8 @@ const path = require("node:path");
 const hookInstall = require("./hook-install.js");
 
 const POLL_MS = 700;
-const RING_DEBOUNCE_MS = 1200;
-let lastRingTs = 0;
 const HEARTBEAT_MS = 20000;
+const RING_DEBOUNCE_MS = 1200;
 const VIEW_ID = "claudeBell.player";
 
 /** @type {vscode.WebviewView|null} */
@@ -21,13 +20,20 @@ let view = null;
 let status = null;
 /** @type {vscode.OutputChannel|null} */
 let out = null;
+/** @type {vscode.Uri} */
+let extensionUri;
 let pendingRings = 0;
 let heartbeat = null;
 let watchedPath = "";
 let lastSize = -1;
+let lastRingTs = 0;
 /** @type {fs.FSWatcher|null} */
 let dirWatcher = null;
 let lockedToastShown = false;
+/** @type {"installed"|"off"|"error"|"unknown"} */
+let hookState = "unknown";
+/** @type {{ts:number, reason:string}|null} */
+let lastRing = null;
 
 /**
  * @param {string} line
@@ -43,7 +49,7 @@ const cfg = () => vscode.workspace.getConfiguration("claudeBell");
 /** @returns {string} the signal file the hook appends to */
 const signalPath = () => String(cfg().get("signalFile") || "") || path.join(os.homedir(), ".claude", ".claude-bell-signal");
 
-/** @returns {string} the liveness marker the hook reads */
+/** @returns {string} the liveness marker the optional plugin reads */
 const markerPath = () => path.join(os.homedir(), ".claude", ".claude-bell-extension");
 
 /** @returns {string} the person's own sound file (claudeBell.soundFile) when it exists on the extension host, else "" */
@@ -70,21 +76,27 @@ function applyWebviewOptions(v) {
 
 /**
  * @param {vscode.WebviewView} v
- * @returns {{type:string, sound:string, volume:number, fileUrl:string, fileName:string}} the config message the webview renders from
+ * @returns {object} the config message the webview renders from
  */
 function configMessage(v) {
   const f = soundFile();
   return {
     type: "config",
+    enabled: !!cfg().get("enabled"),
     sound: String(cfg().get("sound") || "desk"),
     volume: Number(cfg().get("volume")),
     fileUrl: f ? v.webview.asWebviewUri(vscode.Uri.file(f)).toString() : "",
     fileName: f ? path.basename(f) : "",
+    hook: hookState,
+    host: vscode.env.remoteName || "local",
+    lastRing,
   };
 }
 
-/** @type {vscode.Uri} */
-let extensionUri;
+/** @returns {void} */
+function pushConfig() {
+  if (view) view.webview.postMessage(configMessage(view));
+}
 
 /**
  * @param {string} p
@@ -100,10 +112,33 @@ function ensureFile(p) {
 }
 
 /**
+ * @param {string} event the hook's event name from the newest signal line
+ * @returns {string} the reason shown to the person
+ */
+function reasonOf(event) {
+  if (event === "Stop") return "turn finished";
+  if (event === "Notification") return "waiting for you";
+  return event || "signal";
+}
+
+/** @returns {string} the event name of the newest signal line, or "" */
+function newestEvent() {
+  try {
+    const text = fs.readFileSync(watchedPath, "utf8");
+    const lines = text.trim().split("\n");
+    const last = lines[lines.length - 1] || "";
+    return String(JSON.parse(last).event || "");
+  } catch {
+    return "";
+  }
+}
+
+/**
  * @param {string} why
+ * @param {string} [reason]
  * @returns {void} rings the webview now, or queues one ring until the view exists
  */
-function ring(why) {
+function ring(why, reason = "test") {
   if (!cfg().get("enabled")) {
     log(`ring skipped (disabled) — ${why}`);
     return;
@@ -113,13 +148,14 @@ function ring(why) {
     return;
   }
   lastRingTs = Date.now();
+  lastRing = { ts: lastRingTs, reason };
   if (status) {
     status.text = "$(bell-dot)";
     setTimeout(refreshStatus, 1500);
   }
   if (view) {
-    view.webview.postMessage({ type: "ring", volume: Number(cfg().get("volume")), sound: String(cfg().get("sound") || "desk") });
-    log(`ring posted to webview (${cfg().get("sound")}) — ${why}`);
+    view.webview.postMessage({ type: "ring", volume: Number(cfg().get("volume")), sound: String(cfg().get("sound") || "desk"), reason, ts: lastRingTs });
+    log(`ring posted to webview (${cfg().get("sound")}, ${reason}) — ${why}`);
   } else {
     pendingRings = 1;
     log(`ring queued, view not resolved yet — revealing — ${why}`);
@@ -142,14 +178,17 @@ function refreshStatus() {
  */
 function ensureHook(why) {
   if (!cfg().get("installHook")) {
+    hookState = "off";
     log(`hook install skipped (claudeBell.installHook=false) — ${why}`);
     return;
   }
   const r = hookInstall.installHooks(signalPath(), log);
   if (r.error) {
+    hookState = "error";
     vscode.window.showWarningMessage(`Claude Bell: could not write the Claude Code hook into ${r.path} (${r.error}). Fix that file or add the hook by hand — see the Claude Bell README.`);
     return;
   }
+  hookState = "installed";
   if (r.changed) {
     vscode.window.showInformationMessage("Claude Bell: hook installed into Claude Code. It takes effect in new Claude Code conversations — in an open one, type /hooks once.");
   } else {
@@ -157,7 +196,7 @@ function ensureHook(why) {
   }
 }
 
-/** @returns {void} writes the liveness marker the hook reads */
+/** @returns {void} writes the liveness marker the optional plugin reads */
 function beat() {
   try {
     fs.writeFileSync(markerPath(), String(Date.now()));
@@ -184,7 +223,7 @@ function checkSignal(source) {
   if (size !== lastSize) {
     const grew = size > lastSize;
     lastSize = size;
-    if (grew) ring(`signal grew to ${size} bytes (${source})`);
+    if (grew) ring(`signal grew to ${size} bytes (${source})`, reasonOf(newestEvent()));
     else log(`signal file restarted at ${size} bytes (${source})`);
   }
 }
@@ -218,52 +257,77 @@ function watchSignal() {
 
 /**
  * @param {vscode.Webview} webview
- * @returns {string} the player page: a Web Audio chime, an unlock button for a suspended AudioContext, one line of state
+ * @returns {string} the panel: header with state, hook and last ring; one card per sound with its own play button; the own-file card with a picker
  */
 function html(webview) {
   const nonce = String(Date.now());
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src ${webview.cspSource}; media-src ${webview.cspSource};">
 <style>
-body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);padding:8px 12px;font-size:12px}
-button{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:0;padding:4px 10px;border-radius:2px;cursor:pointer}
-#state{opacity:.8;margin-top:6px}
+:root{--fg:var(--vscode-foreground);--muted:var(--vscode-descriptionForeground);--line:var(--vscode-widget-border,var(--vscode-panel-border,rgba(128,128,128,.35)));--card:var(--vscode-editorWidget-background,var(--vscode-sideBar-background));--sel:var(--vscode-focusBorder);--btn:var(--vscode-button-background);--btn-fg:var(--vscode-button-foreground);--btn2:var(--vscode-button-secondaryBackground);--btn2-fg:var(--vscode-button-secondaryForeground);--ok:var(--vscode-testing-iconPassed,#4ec9b0);--warn:var(--vscode-editorWarning-foreground,#cca700);--font:var(--vscode-font-family);--mono:var(--vscode-editor-font-family,monospace)}
+*{box-sizing:border-box}
+body{margin:0;padding:10px 14px 12px;color:var(--fg);font-family:var(--font);font-size:12.5px;line-height:1.4}
+body.off .cards{opacity:.55}
+.head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.state{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}
+body.off .dot{background:var(--muted)}
+.dot.warn{background:var(--warn)}
+b{font-weight:600}
+.muted{color:var(--muted)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.vol{display:flex;align-items:center;gap:6px}
+input[type=range]{appearance:none;width:96px;height:3px;background:var(--line);border-radius:2px;outline:0;margin:0}
+input[type=range]::-webkit-slider-thumb{appearance:none;width:12px;height:12px;border-radius:50%;background:var(--fg)}
+input[type=range]:focus-visible::-webkit-slider-thumb{outline:1px solid var(--sel)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:10px;margin-top:10px}
+.card{border:1px solid var(--line);border-radius:4px;padding:9px 11px 8px;display:grid;gap:5px;background:var(--card);cursor:pointer;min-width:0}
+.card:hover{border-color:var(--muted)}
+.card.on{border-color:var(--sel);box-shadow:inset 0 0 0 1px var(--sel)}
+.card:focus-visible{outline:1px solid var(--sel);outline-offset:1px}
+.card .name{font-weight:600;display:flex;align-items:center;gap:6px}
+.card .name .check{width:12px;height:12px;display:none}
+.card.on .name .check{display:inline-block}
+.card small{color:var(--muted);font-size:11.5px;line-height:1.35}
+.card .file{font-family:var(--mono);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.foot{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:2px}
+.play{width:26px;height:26px;border-radius:50%;border:1px solid var(--line);background:var(--btn2);color:var(--btn2-fg);display:inline-grid;place-items:center;cursor:pointer;padding:0;flex:none}
+.play:hover{border-color:var(--muted)}
+.play:focus-visible{outline:1px solid var(--sel);outline-offset:1px}
+.play svg{width:12px;height:12px}
+.btn{background:var(--btn);color:var(--btn-fg);border:0;border-radius:2px;padding:3px 9px;font:inherit;font-size:12px;cursor:pointer}
+.btn.sec{background:var(--btn2);color:var(--btn2-fg)}
+.btn:focus-visible{outline:1px solid var(--sel);outline-offset:1px}
+#unlock{display:none}
+body.locked #unlock{display:inline-block}
 </style></head><body>
-<div>Claude Bell rings here when Claude Code finishes its turn or waits for you. Keep this view open in the Panel (any tab may be active).</div>
-<div style="margin-top:8px">
-  <select id="preset">
-    <option value="desk">Reception desk bell — one strike</option>
-    <option value="desk-double">Reception desk bell — two strikes</option>
-    <option value="soft">Soft chime (two gentle notes)</option>
-    <option value="classic">Classic two-tone</option>
-    <option value="file" id="fileopt">Your own file (none chosen)</option>
-  </select>
-  <button id="test">Preview</button>
-  <button id="use">Use this sound</button>
-  <button id="pick">Choose file…</button>
-  <button id="unlock" style="display:none">Enable sound</button>
+<div class="head">
+  <div class="state">
+    <span class="dot" id="dot"></span><b id="enabled">Enabled</b>
+    <span class="muted" id="tagline">rings when Claude Code finishes its turn or waits for you</span>
+    <button class="btn" id="unlock">Enable sound</button>
+  </div>
+  <div class="right">
+    <span class="muted" id="hook"></span>
+    <span class="muted" id="last"></span>
+    <label class="vol muted" for="vol">Volume <input type="range" id="vol" min="0" max="100" value="60"></label>
+  </div>
 </div>
-<div id="state">starting</div>
+<div class="cards" id="cards">
+  <div class="card" data-s="desk" tabindex="0"><div class="name"><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Desk bell</div><small>Metallic strike, long decay — the reception counter bell</small><div class="foot"><span class="muted">1.8 s</span><button class="play" data-play="desk" title="Play"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 3l9 5-9 5z"/></svg></button></div></div>
+  <div class="card" data-s="desk-double" tabindex="0"><div class="name"><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Desk bell ×2</div><small>Two quick strikes</small><div class="foot"><span class="muted">2.0 s</span><button class="play" data-play="desk-double" title="Play"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 3l9 5-9 5z"/></svg></button></div></div>
+  <div class="card" data-s="soft" tabindex="0"><div class="name"><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Soft chime</div><small>Two gentle notes, like a system notification</small><div class="foot"><span class="muted">1.4 s</span><button class="play" data-play="soft" title="Play"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 3l9 5-9 5z"/></svg></button></div></div>
+  <div class="card" data-s="classic" tabindex="0"><div class="name"><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Two-tone</div><small>Short rising ding</small><div class="foot"><span class="muted">0.8 s</span><button class="play" data-play="classic" title="Play"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 3l9 5-9 5z"/></svg></button></div></div>
+  <div class="card" data-s="file" tabindex="0"><div class="name"><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Your own file</div><div class="file muted" id="fileName">No file chosen</div><div class="foot"><button class="btn sec" id="pick">Choose…</button><button class="play" data-play="file" title="Play"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 3l9 5-9 5z"/></svg></button></div></div>
+</div>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 let ctx = null;
-let current = { sound: "desk", volume: 0.6, fileUrl: "", fileName: "" };
+let current = { sound: "desk", volume: 0.6, fileUrl: "", fileName: "", enabled: true };
 let fileBuffer = null;
 let fileBufferUrl = "";
-const state = (t) => { document.getElementById("state").textContent = t; };
-const sel = document.getElementById("preset");
-async function playFile(c, t0, v) {
-  if (!current.fileUrl) return false;
-  if (!fileBuffer || fileBufferUrl !== current.fileUrl) {
-    const res = await fetch(current.fileUrl);
-    fileBuffer = await c.decodeAudioData(await res.arrayBuffer());
-    fileBufferUrl = current.fileUrl;
-  }
-  const src = c.createBufferSource(); src.buffer = fileBuffer;
-  const g = c.createGain(); g.gain.value = Math.max(0, Math.min(1, v * 2));
-  src.connect(g); g.connect(c.destination); src.start(t0);
-  return true;
-}
+const $ = (id) => document.getElementById(id);
 function ensureCtx() { if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); return ctx; }
 function tone(c, f, t0, dur, gain, attack) {
   const o = c.createOscillator(); const g = c.createGain();
@@ -292,44 +356,69 @@ const presets = {
   "soft": (c, t, v) => { tone(c, 660, t, 0.9, v * 0.8, 0.03); tone(c, 880, t + 0.18, 1.2, v * 0.7, 0.03); },
   "classic": (c, t, v) => { tone(c, 880, t, 0.55, v); tone(c, 1320, t + 0.12, 0.7, v * 0.8); },
 };
+async function playFile(c, t0, v) {
+  if (!current.fileUrl) return false;
+  if (!fileBuffer || fileBufferUrl !== current.fileUrl) {
+    const res = await fetch(current.fileUrl);
+    fileBuffer = await c.decodeAudioData(await res.arrayBuffer());
+    fileBufferUrl = current.fileUrl;
+  }
+  const src = c.createBufferSource(); src.buffer = fileBuffer;
+  const g = c.createGain(); g.gain.value = Math.max(0, Math.min(1, v * 2));
+  src.connect(g); g.connect(c.destination); src.start(t0);
+  return true;
+}
 async function unlocked() {
   const c = ensureCtx();
   if (c.state === "suspended") { try { await c.resume(); } catch (e) { void e; } }
   const ok = c.state === "running";
-  document.getElementById("unlock").style.display = ok ? "none" : "";
+  document.body.classList.toggle("locked", !ok);
   return ok;
 }
 async function chime(volume, why, sound) {
-  if (!(await unlocked())) { state("sound is locked by the browser policy — click Enable sound once"); vscode.postMessage({ type: "locked", why }); return; }
+  if (!(await unlocked())) { vscode.postMessage({ type: "locked", why }); return; }
   const c = ctx;
   const v = Math.max(0, Math.min(1, Number(volume) || 0.6)) * 0.5;
   let name = presets[sound] ? sound : sound === "file" ? "file" : "desk";
   if (name === "file") {
     let played = false;
     try { played = await playFile(c, c.currentTime, v); } catch (e) { vscode.postMessage({ type: "fileError", message: String(e && e.message || e) }); }
-    if (!played) { name = "desk"; presets.desk(c, c.currentTime, v); state("own file not playable — fell back to desk bell"); }
+    if (!played) { name = "desk"; presets.desk(c, c.currentTime, v); }
   } else {
     presets[name](c, c.currentTime, v);
   }
-  state("rang at " + new Date().toLocaleTimeString() + " (" + why + ", " + (name === "file" ? current.fileName : name) + ")");
   vscode.postMessage({ type: "rang", why, sound: name });
 }
+function fmt(ts) { const d = new Date(ts); return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+function render() {
+  document.body.classList.toggle("off", !current.enabled);
+  $("enabled").textContent = current.enabled ? "Enabled" : "Disabled";
+  $("tagline").textContent = current.enabled ? "rings when Claude Code finishes its turn or waits for you" : "click the bell in the status bar to turn it back on";
+  $("hook").textContent = current.hook === "installed" ? "hook: installed" : current.hook === "off" ? "hook: managed by you" : current.hook === "error" ? "hook: not installed" : "";
+  $("hook").className = current.hook === "error" ? "" : "muted";
+  $("last").textContent = current.lastRing ? "last ring " + fmt(current.lastRing.ts) + " · " + current.lastRing.reason : "no rings yet";
+  $("fileName").textContent = current.fileName || "No file chosen";
+  $("fileName").classList.toggle("muted", !current.fileName);
+  $("vol").value = Math.round((Number(current.volume) || 0.6) * 100);
+  document.querySelectorAll(".card").forEach((c) => c.classList.toggle("on", c.dataset.s === current.sound));
+}
 window.addEventListener("message", (e) => {
-  if (!e.data) return;
-  if (e.data.type === "ring") chime(e.data.volume, "signal", e.data.sound || current.sound);
-  if (e.data.type === "config") {
-    current = { sound: e.data.sound || "desk", volume: Number(e.data.volume) || 0.6, fileUrl: e.data.fileUrl || "", fileName: e.data.fileName || "" };
-    document.getElementById("fileopt").textContent = current.fileName ? "Your own file: " + current.fileName : "Your own file (none chosen — click Choose file…)";
-    sel.value = current.sound;
-    state("sound: " + (current.sound === "file" ? current.fileName || "file (none chosen)" : current.sound));
-  }
-  if (e.data.type === "enabled") state(e.data.value ? "enabled" : "disabled — click the bell in the status bar to turn it back on");
+  const m = e.data; if (!m) return;
+  if (m.type === "ring") { current.lastRing = { ts: m.ts || Date.now(), reason: m.reason || "signal" }; render(); chime(m.volume, "signal", m.sound || current.sound); }
+  if (m.type === "config") { current = { ...current, ...m }; render(); }
 });
-document.getElementById("test").addEventListener("click", () => chime(current.volume, "preview", sel.value));
-document.getElementById("use").addEventListener("click", () => { current.sound = sel.value; vscode.postMessage({ type: "setSound", value: sel.value }); state("sound saved: " + sel.value); });
-document.getElementById("pick").addEventListener("click", () => vscode.postMessage({ type: "pickFile" }));
-document.getElementById("unlock").addEventListener("click", async () => { if (await unlocked()) { state("sound enabled"); vscode.postMessage({ type: "unlocked" }); } });
-unlocked().then((ok) => { state(ok ? "ready" : "sound is locked by the browser policy — click Enable sound once"); vscode.postMessage({ type: "ready", audio: ok ? "running" : "suspended" }); });
+document.querySelectorAll("[data-play]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); chime(current.volume, "preview", b.dataset.play); }));
+document.querySelectorAll(".card").forEach((c) => {
+  const choose = () => { current.sound = c.dataset.s; render(); vscode.postMessage({ type: "setSound", value: c.dataset.s }); if (c.dataset.s === "file" && !current.fileName) vscode.postMessage({ type: "pickFile" }); };
+  c.addEventListener("click", choose);
+  c.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); choose(); } });
+});
+$("pick").addEventListener("click", (e) => { e.stopPropagation(); vscode.postMessage({ type: "pickFile" }); });
+$("vol").addEventListener("input", () => { current.volume = Number($("vol").value) / 100; });
+$("vol").addEventListener("change", () => vscode.postMessage({ type: "setVolume", value: Number($("vol").value) / 100 }));
+$("unlock").addEventListener("click", async () => { if (await unlocked()) vscode.postMessage({ type: "unlocked" }); });
+render();
+unlocked().then((ok) => vscode.postMessage({ type: "ready", audio: ok ? "running" : "suspended" }));
 </script></body></html>`;
 }
 
@@ -353,10 +442,7 @@ function activate(context) {
       applyWebviewOptions(v);
       v.webview.html = html(v.webview);
       log("webview view resolved");
-      setTimeout(() => {
-        v.webview.postMessage(configMessage(v));
-        if (!cfg().get("enabled")) v.webview.postMessage({ type: "enabled", value: false });
-      }, 500);
+      setTimeout(pushConfig, 400);
       v.webview.onDidReceiveMessage((m) => {
         log(`webview → ${JSON.stringify(m)}`);
         if (m?.type === "ready" && pendingRings) {
@@ -365,6 +451,9 @@ function activate(context) {
         }
         if (m?.type === "setSound" && typeof m.value === "string") {
           cfg().update("sound", m.value, vscode.ConfigurationTarget.Global).then(() => log(`sound=${m.value}`));
+        }
+        if (m?.type === "setVolume" && Number.isFinite(Number(m.value))) {
+          cfg().update("volume", Math.max(0, Math.min(1, Number(m.value))), vscode.ConfigurationTarget.Global).then(() => log(`volume=${m.value}`));
         }
         if (m?.type === "pickFile") vscode.commands.executeCommand("claudeBell.pickSoundFile");
         if (m?.type === "fileError") vscode.window.showWarningMessage(`Claude Bell: could not play the chosen file (${m.message}). Use a .wav, .mp3 or .ogg on the machine where Claude Code runs.`);
@@ -387,14 +476,14 @@ function activate(context) {
   context.subscriptions.push(status);
   refreshStatus();
 
-  context.subscriptions.push(vscode.commands.registerCommand("claudeBell.test", () => ring("test command")));
+  context.subscriptions.push(vscode.commands.registerCommand("claudeBell.test", () => ring("test command", "test")));
   context.subscriptions.push(vscode.commands.registerCommand("claudeBell.toggle", async () => {
     const next = !cfg().get("enabled");
     await cfg().update("enabled", next, vscode.ConfigurationTarget.Global);
     refreshStatus();
     log(`enabled=${next}`);
     vscode.window.setStatusBarMessage(next ? "$(bell) Claude Bell: on" : "$(bell-slash) Claude Bell: off — click the bell in the status bar to turn it back on", 4000);
-    if (view) view.webview.postMessage({ type: "enabled", value: next });
+    pushConfig();
   }));
   context.subscriptions.push(vscode.commands.registerCommand("claudeBell.pickSoundFile", async () => {
     const picked = await vscode.window.showOpenDialog({
@@ -410,10 +499,14 @@ function activate(context) {
   }));
   context.subscriptions.push(vscode.commands.registerCommand("claudeBell.installHook", () => {
     const r = hookInstall.installHooks(signalPath(), log);
+    hookState = r.error ? "error" : "installed";
+    pushConfig();
     vscode.window.showInformationMessage(r.error ? `Claude Bell: hook not installed — ${r.error}` : r.changed ? `Claude Bell: hook installed into ${r.path}. New Claude Code conversations ring; in an open one type /hooks.` : `Claude Bell: hook already present in ${r.path}.`);
   }));
   context.subscriptions.push(vscode.commands.registerCommand("claudeBell.removeHook", () => {
     const r = hookInstall.removeHooks(log);
+    if (!r.error) hookState = "off";
+    pushConfig();
     vscode.window.showInformationMessage(r.error ? `Claude Bell: hook not removed — ${r.error}` : r.changed ? `Claude Bell: hook removed from ${r.path}.` : `Claude Bell: no hook of ours in ${r.path}.`);
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
@@ -425,14 +518,13 @@ function activate(context) {
       if (cfg().get("installHook")) ensureHook("installHook turned on");
       else {
         const r = hookInstall.removeHooks(log);
+        hookState = "off";
         log(`installHook turned off — ${r.changed ? "hook removed" : "nothing to remove"}`);
       }
     }
     if (e.affectsConfiguration("claudeBell.enabled")) refreshStatus();
-    if ((e.affectsConfiguration("claudeBell.sound") || e.affectsConfiguration("claudeBell.volume") || e.affectsConfiguration("claudeBell.soundFile")) && view) {
-      if (e.affectsConfiguration("claudeBell.soundFile")) applyWebviewOptions(view);
-      view.webview.postMessage(configMessage(view));
-    }
+    if (e.affectsConfiguration("claudeBell.soundFile") && view) applyWebviewOptions(view);
+    if (e.affectsConfiguration("claudeBell")) pushConfig();
   }));
 
   watchSignal();
