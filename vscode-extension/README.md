@@ -1,4 +1,4 @@
-# Claude Bell (VS Code extension)
+# Claude Bell
 
 Chime in your VS Code window when Claude Code finishes its turn or waits for your permission. The sound is produced **on your machine**, so it works when Claude Code runs over SSH or in WSL.
 
