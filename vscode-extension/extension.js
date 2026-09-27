@@ -1,7 +1,7 @@
 /**
  * @summary Claude Bell — a self-contained chime for Claude Code inside VS Code. In a LOCAL window every ring goes through the OS player (player.js: WPF MediaPlayer via PowerShell, afplay, paplay — with volume, no user gesture needed) playing the bundled WAVs rendered from the panel's own formulas (media/sounds, scripts/render-chimes.mjs) or a sound from the person's LIBRARY — the folder ~/.claude/claude-bell/sounds (claudeBell.soundsFolder overrides): every audio file in it is one card in the panel; the «+» card opens a file picker and the panel decodes the file (any format the browser plays), trims silence, normalizes the peak and hands back a mono 16-bit WAV the extension writes into the folder; a file dropped into the folder by hand shows up too, and a non-WAV one is transcoded into .cache/<name>.wav so paplay and SoundPlayer can play it; the × on a library card deletes the file after a confirm. The folder is watched (fs.watch + a 2 s poll) so the cards follow it. In a REMOTE window (SSH, WSL) the server has no speakers, so the ring is played by the panel's webview on the person's machine, which the browser keeps muted until one click inside the panel — the header shows Enable sound and a toast points there once. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL); at activation it installs its OWN hook into Claude Code's ~/.claude/settings.json there (hook-install.js: plain shell one-liners on Stop and on Notification idle_prompt|permission_prompt that append one JSON line to the signal file — no plugin, no node, nothing pointing into the extension folder; claudeBell.installHook=false opts out, `vscode:uninstall` removes exactly those entries) and watches that signal file (~/.claude/.claude-bell-signal) two ways at once — a directory fs.watch and a 700 ms stat poll — comparing the size it saw last and reading the newest line to name the reason. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, every 20 s) that the optional `bell` plugin reads to skip its own OS player; rings inside 2500 ms of each other collapse into one. The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it alive after the Panel switches back to the terminal. Every step is one line in the «Claude Bell» output channel. The legacy claudeBell.soundFile setting is imported into the library once and cleared. Commands: claudeBell.test, claudeBell.toggle, claudeBell.addSound, claudeBell.installHook, claudeBell.removeHook; a status-bar bell mirrors the state and blinks on every ring.
  * @route claude-bell extension | "no sound over SSH" · "rings twice" (marker file missing or stale) · "no sound at all" → View → Output → Claude Bell · "hook not installed" → Claude Bell: Install hook into Claude Code · "where are my sounds" → ~/.claude/claude-bell/sounds
- * @example code --install-extension claude-bell-0.9.1.vsix
+ * @example code --install-extension claude-bell-0.9.2.vsix
  */
 const vscode = require("vscode");
 const fs = require("node:fs");
@@ -11,6 +11,7 @@ const hookInstall = require("./hook-install.js");
 const player = require("./player.js");
 
 const BUILTIN_SOUNDS = ["desk", "desk-double", "soft", "classic"];
+const FALLBACK_SOUND = "desk-double";
 const AUDIO_EXT = new Set([".wav", ".mp3", ".ogg", ".oga", ".flac", ".m4a", ".aac", ".aiff", ".aif"]);
 const CUSTOM_PREFIX = "custom:";
 
@@ -166,7 +167,7 @@ function bundledManifest() {
  * @returns {string} the bundled WAV for it (desk when the name is unknown), or "" when the file is missing
  */
 function bundledSound(name) {
-  const n = BUILTIN_SOUNDS.includes(name) ? name : "desk";
+  const n = BUILTIN_SOUNDS.includes(name) ? name : FALLBACK_SOUND;
   const p = path.join(extensionUri.fsPath, "media", "sounds", `${n}.wav`);
   try {
     return fs.statSync(p).isFile() ? p : "";
@@ -349,7 +350,7 @@ async function deleteSound(id) {
       }
     }
     log(`sound deleted: ${row.file}`);
-    if (String(cfg().get("sound")) === id) await cfg().update("sound", "desk", vscode.ConfigurationTarget.Global);
+    if (String(cfg().get("sound")) === id) await cfg().update("sound", FALLBACK_SOUND, vscode.ConfigurationTarget.Global);
   } catch (e) {
     vscode.window.showWarningMessage(`Claude Bell: could not delete ${row.name} (${e?.message}).`);
   }
@@ -367,7 +368,7 @@ async function migrateLegacyFile() {
     }
   } catch {
     log(`legacy soundFile missing, dropped: ${legacy}`);
-    if (String(cfg().get("sound")) === "file") await cfg().update("sound", "desk", vscode.ConfigurationTarget.Global);
+    if (String(cfg().get("sound")) === "file") await cfg().update("sound", FALLBACK_SOUND, vscode.ConfigurationTarget.Global);
   }
   await cfg().update("soundFile", undefined, vscode.ConfigurationTarget.Global);
 }
@@ -430,10 +431,10 @@ async function ring(why, reason = "test") {
   const volume = Number(cfg().get("volume"));
   if (!vscode.env.remoteName) {
     if (view) view.webview.postMessage({ type: "ringInfo", reason, ts: lastRingTs });
-    const desk = bundledSound("desk");
+    const desk = bundledSound(FALLBACK_SOUND);
     let file = fileForSound(sound);
     if (!file) {
-      log(`sound "${sound}" is not on this machine — playing the desk bell instead — ${why}`);
+      log(`sound "${sound}" is not on this machine — playing ${FALLBACK_SOUND} instead — ${why}`);
       file = desk;
     }
     if (!file) {
@@ -444,13 +445,13 @@ async function ring(why, reason = "test") {
     log(`OS player: ${path.basename(file)} at volume ${volume} (${reason}) → exit ${code} — ${why}`);
     if (code !== 0 && desk && file !== desk) {
       const again = await player.play(desk, volume, log);
-      log(`retry with the desk bell → exit ${again}`);
+      log(`retry with ${FALLBACK_SOUND} → exit ${again}`);
     }
     return;
   }
   if (sound.startsWith(CUSTOM_PREFIX)) {
-    log(`remote window: library sound "${sound}" is not available here — playing the desk bell instead`);
-    sound = "desk";
+    log(`remote window: library sound "${sound}" is not available here — playing ${FALLBACK_SOUND} instead`);
+    sound = FALLBACK_SOUND;
   }
   if (view) {
     view.webview.postMessage({ type: "ring", volume, sound, reason, ts: lastRingTs });
@@ -633,7 +634,7 @@ body.locked:not(.local) .dot{background:var(--warn)}
   </div>
 </div>
 <div class="cards" id="cards"></div>
-<div class="folder muted" id="folderline">Your sounds live in <a id="folder" title="Open the folder">…</a> — drop any .wav / .mp3 / .ogg / .flac there, or use +.</div>
+<div class="folder muted" id="folderline">Your sounds live in <a id="folder" title="Open the folder">…</a> — drop any .wav / .mp3 / .ogg / .flac there (converted to WAV automatically), or use +.</div>
 <div class="folder muted" id="remoteline" style="display:none">Remote window: only the built-in sounds are available here. Your own sounds stay on your local machine and play there.</div>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
@@ -734,9 +735,9 @@ async function chime(volume, why, sound) {
   if (String(sound).startsWith("custom:")) {
     const row = (current.custom || []).find((r) => r.id === sound);
     if (row && row.url) { try { await playUrl(c, row.url, v * 2); played = true; } catch (e) { vscode.postMessage({ type: "fileError", message: String(e && e.message || e) }); } }
-    if (!played) { name = "desk"; presets.desk(c, c.currentTime, v); }
+    if (!played) { name = "desk-double"; presets["desk-double"](c, c.currentTime, v); }
   } else {
-    name = presets[sound] ? sound : "desk";
+    name = presets[sound] ? sound : "desk-double";
     const url = current.sounds && current.sounds[name];
     if (url) { try { await playUrl(c, url, v * 2); played = true; } catch (e) { void e; } }
     if (!played) presets[name](c, c.currentTime, v);
