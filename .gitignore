@@ -3,3 +3,6 @@ node_modules/
 *.vsix
 .DS_Store
 Thumbs.db
+# built and licensed sounds are packaged, never committed (see vscode-extension/README.md)
+vscode-extension/media/sounds/
+vscode-extension/media/sounds-licensed/

@@ -53,6 +53,16 @@ Commands: **Claude Bell: Install hook into Claude Code** and **Claude Bell: Remo
 
 Keep the **Claude Bell** view open in the Panel (any Panel tab may be active). If the panel says sound is locked, click **Enable sound** once.
 
+## Remote windows / Удалённые окна
+
+Over SSH, in WSL or a dev container the extension runs on the remote host, so only the four built-in sounds are offered there and the panel says so; your own sound library stays on your local machine. A library sound chosen locally is replaced by the desk bell in a remote window automatically. / По SSH, в WSL или dev-контейнере расширение работает на удалённой машине, поэтому там доступны только четыре встроенных звука, и панель об этом сообщает; ваша библиотека остаётся на локальной машине. Выбранный локально свой звук в удалённом окне автоматически заменяется на Desk bell.
+
+If a play fails (a missing or unreadable file, a broken player), the ring is repeated once with the built-in desk bell. / Если воспроизведение не удалось (файл пропал или не читается, плеер сломан), звонок один раз повторяется встроенным Desk bell.
+
+## Building / Сборка
+
+`npm run package` renders the built-in sounds and runs the selftest before packaging. Two built-in sounds (desk bell, desk bell ×2) are licensed recordings kept in `media/sounds-licensed/`, a folder git ignores: they ship inside the package but are not redistributed as files. Without them the build falls back to synthesized versions of the same bells. / `npm run package` собирает встроенные звуки и прогоняет селфтест перед упаковкой. Два встроенных звука (Desk bell и Desk bell ×2) — лицензионные записи в папке `media/sounds-licensed/`, которую git игнорирует: они входят в пакет, но не распространяются как файлы. Без них сборка использует синтезированные версии тех же колокольчиков.
+
 ## Silent? / Тихо?
 
 0. **Remote windows only: one click per window.** In a local window the ring plays through your operating system, no click needed. Over SSH or WSL the sound can only come from the panel, and browsers allow that after one click inside it: after VS Code starts, click anywhere in the Claude Bell panel once (its header shows **Enable sound** while locked). / **Только удалённые окна: один клик на окно.** В локальном окне звонок играет через операционную систему, кликать не нужно. По SSH или в WSL звук может идти только из панели, а браузер разрешает его после одного клика внутри неё: после запуска VS Code один раз кликните в панели Claude Bell (пока звук заблокирован, в шапке видна кнопка **Enable sound**).

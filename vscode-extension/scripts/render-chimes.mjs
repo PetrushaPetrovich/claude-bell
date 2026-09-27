@@ -1,15 +1,18 @@
 /**
- * @summary Renders the four built-in chimes to WAV files (media/sounds/<name>.wav, 44.1 kHz, 16-bit mono) with the SAME formulas the panel synthesizes live — desk bell (five inharmonic partials with paired detuned oscillators, exponential decays and a 12 ms high-passed noise click), desk bell ×2, soft chime, two-tone — so the OS player and the panel preview produce one sound. Peak-normalized to 0.9; volume is the player's job. Run once per formula change and commit the files; the extension selftest refuses to package when a file is missing or malformed.
+ * @summary Builds the four built-in chimes into media/sounds/<name>.wav (44.1 kHz, 16-bit mono, peak 0.9) plus media/sounds/manifest.json with each one's seconds and origin. A name that has a licensed recording in media/sounds-licensed/<name>.wav (a folder git never sees — those files may ship inside the package but not be redistributed as files) is converted from it: PCM WAV decoded (16/24/32-bit int or 32-bit float), downmixed to mono, silence trimmed at both ends, capped at 8 s, normalized. A name without one is synthesized with the SAME formulas the panel plays live — desk bell (inharmonic partials, detuned pairs, a high-passed click), desk bell ×2, soft chime, two-tone. Runs before every package so the folder is always complete.
  * @route render-chimes | node scripts/render-chimes.mjs
- * @verdict Done | four files written, sizes and durations printed
+ * @verdict Done | four files and the manifest written, each with its seconds and origin printed
+ * @verdict Blocked:licensed_unreadable | a licensed file is present but not PCM WAV — fix or remove it; exit 1
  * @example node scripts/render-chimes.mjs
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const RATE = 44100;
-const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "media", "sounds");
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const OUT = join(ROOT, "media", "sounds");
+const LICENSED = join(ROOT, "media", "sounds-licensed");
 
 /**
  * @param {Float32Array} buf
@@ -25,9 +28,7 @@ function tone(buf, f, t0, dur, gain, attack = 0.01) {
   const end = Math.min(buf.length, Math.floor((t0 + dur + 0.05) * RATE));
   for (let i = start; i < end; i++) {
     const t = i / RATE - t0;
-    let env;
-    if (t < attack) env = 0.0001 * Math.pow(gain / 0.0001, t / attack);
-    else env = gain * Math.pow(0.0001 / gain, Math.min(1, (t - attack) / Math.max(0.001, dur - attack)));
+    const env = t < attack ? 0.0001 * Math.pow(gain / 0.0001, t / attack) : gain * Math.pow(0.0001 / gain, Math.min(1, (t - attack) / Math.max(0.001, dur - attack)));
     buf[i] += env * Math.sin(2 * Math.PI * f * t);
   }
 }
@@ -73,7 +74,7 @@ function strike(buf, t0, f0, gain, decay) {
 
 const GAIN = 0.5;
 /** @type {Record<string, {seconds:number, render:(b:Float32Array)=>void}>} */
-const CHIMES = {
+const SYNTH = {
   "desk": { seconds: 1.9, render: (b) => strike(b, 0, 1850, GAIN, 1.8) },
   "desk-double": { seconds: 2.0, render: (b) => { strike(b, 0, 1850, GAIN, 1.3); strike(b, 0.22, 1850, GAIN * 0.9, 1.7); } },
   "soft": { seconds: 1.5, render: (b) => { tone(b, 660, 0, 0.9, GAIN * 0.8, 0.03); tone(b, 880, 0.18, 1.2, GAIN * 0.7, 0.03); } },
@@ -81,8 +82,82 @@ const CHIMES = {
 };
 
 /**
+ * @param {Buffer} b a PCM WAV file
+ * @returns {{rate:number, mono:Float32Array}} decoded, downmixed to mono
+ */
+function decodeWav(b) {
+  if (b.toString("ascii", 0, 4) !== "RIFF" || b.toString("ascii", 8, 12) !== "WAVE") throw new Error("not a RIFF/WAVE file");
+  let off = 12;
+  let fmt = null;
+  let data = null;
+  while (off + 8 <= b.length) {
+    const id = b.toString("ascii", off, off + 4);
+    const sz = b.readUInt32LE(off + 4);
+    if (id === "fmt ") fmt = { tag: b.readUInt16LE(off + 8), ch: b.readUInt16LE(off + 10), rate: b.readUInt32LE(off + 12), bits: b.readUInt16LE(off + 22) };
+    if (id === "data") {
+      data = { off: off + 8, sz: Math.min(sz, b.length - off - 8) };
+      break;
+    }
+    off += 8 + sz + (sz % 2);
+  }
+  if (!fmt || !data) throw new Error("fmt or data chunk missing");
+  if (fmt.tag === 0xfffe) fmt.tag = fmt.bits === 32 ? 3 : 1;
+  const bytes = fmt.bits / 8;
+  const frames = Math.floor(data.sz / (bytes * fmt.ch));
+  const mono = new Float32Array(frames);
+  for (let i = 0; i < frames; i++) {
+    let acc = 0;
+    for (let c = 0; c < fmt.ch; c++) {
+      const p = data.off + (i * fmt.ch + c) * bytes;
+      let v;
+      if (fmt.tag === 3 && fmt.bits === 32) v = b.readFloatLE(p);
+      else if (fmt.bits === 16) v = b.readInt16LE(p) / 32768;
+      else if (fmt.bits === 24) v = ((b[p] | (b[p + 1] << 8) | (b[p + 2] << 16)) << 8 >> 8) / 8388608;
+      else if (fmt.bits === 32) v = b.readInt32LE(p) / 2147483648;
+      else if (fmt.bits === 8) v = (b[p] - 128) / 128;
+      else throw new Error(`unsupported bit depth ${fmt.bits}`);
+      acc += v;
+    }
+    mono[i] = acc / fmt.ch;
+  }
+  return { rate: fmt.rate, mono };
+}
+
+/**
+ * @param {Float32Array} src
+ * @param {number} from
+ * @returns {Float32Array} linear resample to RATE
+ */
+function resample(src, from) {
+  if (from === RATE) return src;
+  const n = Math.floor((src.length * RATE) / from);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i * from) / RATE;
+    const j = Math.floor(x);
+    const t = x - j;
+    out[i] = (src[j] || 0) * (1 - t) + (src[j + 1] || 0) * t;
+  }
+  return out;
+}
+
+/**
+ * @param {Float32Array} s
+ * @returns {Float32Array} silence trimmed at both ends (10 ms lead, 50 ms tail kept), capped at 8 s
+ */
+function trim(s) {
+  let end = s.length;
+  while (end > 1 && Math.abs(s[end - 1]) < 0.002) end--;
+  end = Math.min(end + Math.floor(RATE * 0.05), s.length, RATE * 8);
+  let start = 0;
+  while (start < end - 1 && Math.abs(s[start]) < 0.002) start++;
+  start = Math.max(0, start - Math.floor(RATE * 0.01));
+  return s.subarray(start, end);
+}
+
+/**
  * @param {Float32Array} samples
- * @returns {Buffer} 16-bit PCM mono WAV
+ * @returns {Buffer} 16-bit PCM mono WAV, peak-normalized to 0.9
  */
 function wav(samples) {
   let peak = 0;
@@ -99,12 +174,31 @@ function wav(samples) {
 }
 
 mkdirSync(OUT, { recursive: true });
-for (const [name, c] of Object.entries(CHIMES)) {
-  const buf = new Float32Array(Math.floor(c.seconds * RATE));
-  c.render(buf);
-  const file = join(OUT, `${name}.wav`);
-  const bytes = wav(buf);
-  writeFileSync(file, bytes);
-  console.log(`${name}.wav  ${c.seconds.toFixed(1)} s  ${(bytes.length / 1024).toFixed(0)} KB`);
+/** @type {Record<string, {seconds:number, origin:string}>} */
+const manifest = {};
+for (const [name, c] of Object.entries(SYNTH)) {
+  const licensed = join(LICENSED, `${name}.wav`);
+  let samples;
+  let origin;
+  if (existsSync(licensed)) {
+    try {
+      const d = decodeWav(readFileSync(licensed));
+      samples = trim(resample(d.mono, d.rate));
+      origin = "licensed recording";
+    } catch (e) {
+      console.log(`Blocked:licensed_unreadable ${licensed}: ${e.message}`);
+      process.exit(1);
+    }
+  } else {
+    samples = new Float32Array(Math.floor(c.seconds * RATE));
+    c.render(samples);
+    origin = "synthesized";
+  }
+  const bytes = wav(samples);
+  writeFileSync(join(OUT, `${name}.wav`), bytes);
+  const seconds = samples.length / RATE;
+  manifest[name] = { seconds: Math.round(seconds * 100) / 100, origin };
+  console.log(`${name}.wav  ${seconds.toFixed(2)} s  ${(bytes.length / 1024).toFixed(0)} KB  (${origin})`);
 }
-console.log("Done: chimes rendered to", OUT);
+writeFileSync(join(OUT, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+console.log("Done: chimes built into", OUT);

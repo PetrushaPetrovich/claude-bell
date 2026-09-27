@@ -136,6 +136,10 @@ w.fetch = async () => { throw new Error("no fetch in the test"); };
 w.postMessage({ type: "ring", volume: 0.5, sound: "custom:ring.wav", reason: "turn finished", ts: Date.now() }, "*");
 await tick();
 ok("a ring on a library sound that cannot load falls back to the desk bell and still reports rang", posted.some((m) => m.type === "rang"), JSON.stringify(posted));
+w.postMessage({ type: "config", enabled: true, sound: "desk", volume: 0.5, hook: "installed", host: "ssh-remote", local: false, folder: "", sounds: {}, durations: { desk: 4.2 }, custom: [], lastRing: null }, "*");
+await tick();
+ok("remote window: only the four built-in cards, no + card, no library, the remote note shown", doc.querySelectorAll(".card[data-s]").length === 4 && !doc.getElementById("add") && doc.getElementById("remoteline").style.display !== "none" && doc.getElementById("folderline").style.display === "none");
+ok("built-in card shows the duration from the build manifest", doc.querySelector('.card[data-s="desk"] .foot .muted').textContent === "4.2 s", doc.querySelector('.card[data-s="desk"] .foot .muted').textContent);
 dom.window.close();
 
 /* 2a. Transcoding the person's own file: decode → mono → trim silence → normalize → 16-bit WAV, posted back. */
@@ -229,9 +233,14 @@ const mac = player.playerCommand("darwin", "/tmp/a.wav", 0.25);
 ok("darwin player: afplay -v", mac.cmd === "afplay" && mac.args.join(" ") === "-v 0.25 /tmp/a.wav", JSON.stringify(mac));
 const lin = player.playerCommand("linux", "/tmp/a.wav", 0.5);
 ok("linux player: paplay --volume", lin.cmd === "paplay" && lin.args[0] === "--volume=32768" && lin.args[1] === "/tmp/a.wav", JSON.stringify(lin));
+let manifest = null;
+try { manifest = JSON.parse(readFileSync(join(HERE, "media", "sounds", "manifest.json"), "utf8")); } catch { manifest = null; }
+ok("build manifest names seconds and origin for all four built-in sounds", !!manifest && ["desk", "desk-double", "soft", "classic"].every((n) => manifest[n] && manifest[n].seconds > 0.3 && /licensed|synthesized/.test(manifest[n].origin)), JSON.stringify(manifest));
 if (process.platform === "win32") {
-  const live = spawnSync(win.cmd.replace("C:\\Windows", process.env.SystemRoot || "C:\\Windows"), player.playerCommand("win32", join(HERE, "media", "sounds", "classic.wav"), 0.01).args, { encoding: "utf8", timeout: 20000 });
-  ok("win32 player plays a bundled chime end to end (exit 0, near-silent volume)", live.status === 0, `exit ${live.status} ${String(live.stderr || "").slice(0, 120)}`);
+  const code = await player.play(join(HERE, "media", "sounds", "classic.wav"), 0.01, () => {});
+  ok("win32 player plays a bundled chime end to end and resolves exit 0 (near-silent volume)", code === 0, `exit ${code}`);
+  const bad = await player.play(join(HERE, "media", "sounds", "does-not-exist.wav"), 0.01, () => {});
+  ok("a missing file resolves with a non-zero exit so the caller can retry with a built-in sound", bad !== 0, `exit ${bad}`);
 }
 
 /* 3. hook-install.js against a throwaway HOME. */
