@@ -1,7 +1,7 @@
 /**
- * @summary Claude Bell — a self-contained chime for Claude Code inside VS Code. In a LOCAL window every ring goes through the OS player (player.js: WPF MediaPlayer via PowerShell, afplay, paplay — with volume, no user gesture needed) playing the bundled WAVs rendered from the panel's own formulas (media/sounds, scripts/render-chimes.mjs) or a sound from the person's LIBRARY — the folder ~/.claude/claude-bell/sounds (claudeBell.soundsFolder overrides): every audio file in it is one card in the panel; the «+» card opens a file picker and the panel decodes the file (any format the browser plays), trims silence, normalizes the peak and hands back a mono 16-bit WAV the extension writes into the folder; a file dropped into the folder by hand shows up too, and a non-WAV one is transcoded into .cache/<name>.wav so paplay and SoundPlayer can play it; the × on a library card deletes the file after a confirm. The folder is watched (fs.watch + a 2 s poll) so the cards follow it. In a REMOTE window (SSH, WSL) the server has no speakers, so the ring is played by the panel's webview on the person's machine, which the browser keeps muted until one click inside the panel — the header shows Enable sound and a toast points there once. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL); at activation it installs its OWN hook into Claude Code's ~/.claude/settings.json there (hook-install.js: plain shell one-liners on Stop and on Notification idle_prompt|permission_prompt that append one JSON line to the signal file — no plugin, no node, nothing pointing into the extension folder; claudeBell.installHook=false opts out, `vscode:uninstall` removes exactly those entries) and watches that signal file (~/.claude/.claude-bell-signal) two ways at once — a directory fs.watch and a 700 ms stat poll — comparing the size it saw last and reading the newest line to name the reason. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, every 20 s) that the optional `bell` plugin reads to skip its own OS player; rings inside 2500 ms of each other collapse into one. The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it alive after the Panel switches back to the terminal. Every step is one line in the «Claude Bell» output channel. The legacy claudeBell.soundFile setting is imported into the library once and cleared. Commands: claudeBell.test, claudeBell.toggle, claudeBell.addSound, claudeBell.installHook, claudeBell.removeHook; a status-bar bell mirrors the state and blinks on every ring.
+ * @summary Claude Bell — a self-contained chime for Claude Code inside VS Code. In a LOCAL window every ring goes through the OS player (player.js: WPF MediaPlayer via PowerShell, afplay, paplay — with volume, no user gesture needed) playing the bundled WAVs rendered from the panel's own formulas (media/sounds, scripts/render-chimes.mjs) or a sound from the person's LIBRARY — the folder ~/.claude/claude-bell/sounds (claudeBell.soundsFolder overrides): every audio file in it is one card in the panel; the «+» card opens a file picker and the panel decodes the file (any format the browser plays), trims silence, normalizes the peak and hands back a mono 16-bit WAV the extension writes into the folder; a file dropped into the folder by hand shows up too, and a non-WAV one is converted in place into <name>.wav (the original moves to .cache/originals) so paplay and SoundPlayer can play it; the × on a library card deletes the file after a confirm. The folder is watched (fs.watch + a 2 s poll) so the cards follow it. In a REMOTE window (SSH, WSL) the server has no speakers, so the ring is played by the panel's webview on the person's machine, which the browser keeps muted until one click inside the panel — the header shows Enable sound and a toast points there once. The extension host runs where Claude Code runs (extensionKind workspace: local, SSH remote or WSL); at activation it installs its OWN hook into Claude Code's ~/.claude/settings.json there (hook-install.js: plain shell one-liners on Stop and on Notification idle_prompt|permission_prompt that append one JSON line to the signal file — no plugin, no node, nothing pointing into the extension folder; claudeBell.installHook=false opts out, `vscode:uninstall` removes exactly those entries) and watches that signal file (~/.claude/.claude-bell-signal) two ways at once — a directory fs.watch and a 700 ms stat poll — comparing the size it saw last and reading the newest line to name the reason. While alive the extension refreshes a marker file (~/.claude/.claude-bell-extension, every 20 s) that the optional `bell` plugin reads to skip its own OS player; rings inside 2500 ms of each other collapse into one. The view is revealed once at startup so its webview exists, and retainContextWhenHidden keeps it alive after the Panel switches back to the terminal. Every step is one line in the «Claude Bell» output channel. The legacy claudeBell.soundFile setting is imported into the library once and cleared. Commands: claudeBell.test, claudeBell.toggle, claudeBell.addSound, claudeBell.installHook, claudeBell.removeHook; a status-bar bell mirrors the state and blinks on every ring.
  * @route claude-bell extension | "no sound over SSH" · "rings twice" (marker file missing or stale) · "no sound at all" → View → Output → Claude Bell · "hook not installed" → Claude Bell: Install hook into Claude Code · "where are my sounds" → ~/.claude/claude-bell/sounds
- * @example code --install-extension claude-bell-0.9.3.vsix
+ * @example code --install-extension claude-bell-0.9.4.vsix
  */
 const vscode = require("vscode");
 const fs = require("node:fs");
@@ -47,7 +47,7 @@ let transcodeErrorShown = false;
 let hookState = "unknown";
 /** @type {{ts:number, reason:string}|null} */
 let lastRing = null;
-/** @type {Array<{sourcePath:string, target:"add"|"cache", chooseAfter:boolean}>} */
+/** @type {Array<{sourcePath:string, target:"add"|"import", chooseAfter:boolean}>} */
 let transcodeQueue = [];
 /** @type {Set<string>} */
 const transcodeInFlight = new Set();
@@ -124,12 +124,7 @@ function listCustomSounds() {
     } catch {
       continue;
     }
-    let playable = "";
-    if (ext === ".wav") playable = file;
-    else {
-      const c = cacheFor(file);
-      playable = c.fresh ? c.path : "";
-    }
+    const playable = ext === ".wav" ? file : "";
     rows.push({ id: CUSTOM_PREFIX + n, name: path.basename(n, ext), file, playable, ready: !!playable });
   }
   rows.sort((a, b) => a.name.localeCompare(b.name));
@@ -220,7 +215,7 @@ function pushConfig() {
 
 /**
  * @param {string} sourcePath an audio file anywhere on this machine
- * @param {"add"|"cache"} target add = write <library>/<name>.wav and choose it; cache = write .cache/<name>.wav for a file already in the library
+ * @param {"add"|"import"} target add = write <library>/<name>.wav from a file outside the library and choose it; import = convert a non-WAV file already in the library in place
  * @param {boolean} chooseAfter
  * @returns {void} asks the panel to decode the file into a normalized mono WAV; queued until the panel exists
  */
@@ -270,13 +265,18 @@ async function saveTranscoded(m) {
     const bytes = Buffer.from(String(m.base64 || ""), "base64");
     if (bytes.length < 44 || bytes.toString("ascii", 0, 4) !== "RIFF") throw new Error("not a WAV");
     const base = path.basename(m.sourcePath, path.extname(m.sourcePath));
-    if (m.target === "cache") {
-      ensureDir(cacheFolder());
-      const c = cacheFor(m.sourcePath);
-      fs.writeFileSync(c.path, bytes);
-      const st = fs.statSync(m.sourcePath);
-      fs.writeFileSync(`${c.path}.json`, JSON.stringify({ source: m.sourcePath, size: st.size, mtimeMs: st.mtimeMs, seconds: Number(m.seconds) || 0 }));
-      log(`library file prepared: ${path.basename(m.sourcePath)} → .cache/${path.basename(c.path)} (${(Number(m.seconds) || 0).toFixed(2)} s)`);
+    if (m.target === "import") {
+      const target = freeWavPath(soundsFolder(), base);
+      fs.writeFileSync(target, bytes);
+      const originals = path.join(cacheFolder(), "originals");
+      ensureDir(originals);
+      try {
+        fs.renameSync(m.sourcePath, path.join(originals, path.basename(m.sourcePath)));
+      } catch (e) {
+        log(`original kept in place (${e?.message})`);
+      }
+      log(`library file converted in place: ${path.basename(m.sourcePath)} → ${path.basename(target)} (${(Number(m.seconds) || 0).toFixed(2)} s); original moved to .cache/originals`);
+      if (m.chooseAfter || String(cfg().get("sound")) === CUSTOM_PREFIX + path.basename(m.sourcePath)) await cfg().update("sound", CUSTOM_PREFIX + path.basename(target), vscode.ConfigurationTarget.Global);
     } else {
       ensureDir(soundsFolder());
       const target = freeWavPath(soundsFolder(), base);
@@ -297,7 +297,7 @@ async function saveTranscoded(m) {
  */
 function refreshFolder(why) {
   const rows = listCustomSounds();
-  for (const r of rows) if (!r.ready) requestTranscode(r.file, "cache", false);
+  for (const r of rows) if (!r.ready) requestTranscode(r.file, "import", String(cfg().get("sound")) === r.id);
   const snap = JSON.stringify(rows.map((r) => [r.id, r.ready]));
   if (snap !== folderSnapshot) {
     folderSnapshot = snap;

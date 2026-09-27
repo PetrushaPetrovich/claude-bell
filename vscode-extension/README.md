@@ -14,13 +14,13 @@ The **Claude Bell** tab lives in the bottom Panel next to Terminal: pick a sound
 - **Works on Linux.** The chimes are synthesized in the window, no system sound packages needed.
 - **Self-contained.** Installs its own Claude Code hook; nothing else to install, no local server, no ports.
 - **No telemetry, no auto-approve.** Nothing leaves your machine; your Claude Code permission settings are never touched.
-- **Your own sounds, as a library.** Every audio file in your sounds folder (`~/.claude/claude-bell/sounds`, or `claudeBell.soundsFolder`) is a card in the panel. **+** picks files and converts them once into normalized mono WAV (silence trimmed, volume leveled) so they play through the OS player on every system without a click; files you drop into the folder by hand show up too; **×** on a card deletes the file after a confirm.
+- **Your own sounds, as a library.** Every audio file in your sounds folder (`~/.claude/claude-bell/sounds`, or `claudeBell.soundsFolder`) is a card in the panel. **+** picks files and converts them once into normalized mono WAV (silence trimmed, volume leveled) so they play through the OS player on every system without a click; a file you drop into the folder by hand is converted in place to WAV as well (the original moves to the hidden `.cache/originals`); **×** on a card deletes the file after a confirm.
 
 - **Звенит по SSH, в Remote и WSL.** Другие расширения играют звук через операционную систему той машины, где работает расширение; на удалённом Linux-сервере это тишина. Claude Bell играет внутри вашего окна VS Code, где бы ни работал Claude Code.
 - **Работает на Linux.** Звуки синтезируются в окне, системные звуковые пакеты не нужны.
 - **Самодостаточное.** Само ставит хук в Claude Code; ни локального сервера, ни портов, ничего ставить дополнительно.
 - **Без телеметрии и автоодобрения.** Ничего не уходит с вашей машины; настройки разрешений Claude Code не трогаются.
-- **Свои звуки как библиотека.** Каждый аудиофайл в папке звуков (`~/.claude/claude-bell/sounds` или `claudeBell.soundsFolder`) становится плиткой в панели. **+** выбирает файлы и один раз перекодирует их в выровненный моно WAV (тишина обрезана, громкость нормализована), чтобы они играли системным плеером на любой системе без клика; файлы, положенные в папку вручную, тоже появляются; **×** на плитке удаляет файл после подтверждения.
+- **Свои звуки как библиотека.** Каждый аудиофайл в папке звуков (`~/.claude/claude-bell/sounds` или `claudeBell.soundsFolder`) становится плиткой в панели. **+** выбирает файлы и один раз перекодирует их в выровненный моно WAV (тишина обрезана, громкость нормализована), чтобы они играли системным плеером на любой системе без клика; файл, положенный в папку вручную, тоже перекодируется в WAV на месте (оригинал переезжает в скрытую `.cache/originals`); **×** на плитке удаляет файл после подтверждения.
 
 ## Self-contained / Ничего больше не нужно
 
