@@ -118,6 +118,24 @@ ok("clicking a card saves it as the sound", posted.some((m) => m.type === "setSo
 w.postMessage({ type: "config", enabled: false, sound: "desk", volume: 0.5, fileUrl: "", fileName: "", hook: "installed", host: "local", lastRing: null }, "*");
 await tick();
 ok("disabled state is visible in the header", doc.getElementById("enabled").textContent === "Disabled" && doc.body.classList.contains("off"));
+w.postMessage({ type: "config", enabled: true, sound: "custom:ring.wav", volume: 0.5, hook: "installed", host: "local", local: true, folder: "C:/x/sounds", sounds: {}, custom: [{ id: "custom:ring.wav", name: "ring", ready: true, url: "vscode-resource:/x/sounds/ring.wav" }, { id: "custom:tune.mp3", name: "tune", ready: false, url: "vscode-resource:/x/sounds/tune.mp3" }], lastRing: null }, "*");
+await tick();
+ok("library sounds render as cards after the built-in ones, the chosen one highlighted", doc.querySelectorAll(".card[data-s]").length === 6 && doc.querySelector('.card[data-s="custom:ring.wav"]').classList.contains("on") && doc.querySelector('.card[data-s="custom:tune.mp3"] small').textContent === "Preparing…");
+ok("library cards carry a delete button, built-in cards do not", !!doc.querySelector('.card[data-s="custom:ring.wav"] .del') && !doc.querySelector('.card[data-s="desk"] .del'));
+ok("the folder path is shown", doc.getElementById("folder").textContent === "C:/x/sounds");
+posted.length = 0;
+doc.getElementById("add").click();
+await tick();
+ok("the + card asks the extension to add a sound", posted.some((m) => m.type === "addSound"), JSON.stringify(posted));
+posted.length = 0;
+doc.querySelector('.card[data-s="custom:ring.wav"] .del').click();
+await tick();
+ok("× asks the extension to delete that sound (and does not choose the card)", posted.some((m) => m.type === "deleteSound" && m.id === "custom:ring.wav") && !posted.some((m) => m.type === "setSound"), JSON.stringify(posted));
+posted.length = 0;
+w.fetch = async () => { throw new Error("no fetch in the test"); };
+w.postMessage({ type: "ring", volume: 0.5, sound: "custom:ring.wav", reason: "turn finished", ts: Date.now() }, "*");
+await tick();
+ok("a ring on a library sound that cannot load falls back to the desk bell and still reports rang", posted.some((m) => m.type === "rang"), JSON.stringify(posted));
 dom.window.close();
 
 /* 2a. Transcoding the person's own file: decode → mono → trim silence → normalize → 16-bit WAV, posted back. */
@@ -140,9 +158,10 @@ dom.window.close();
   w3.OfflineAudioContext = class { constructor() {} async decodeAudioData() { return { sampleRate: rate, length: len, numberOfChannels: 2, getChannelData: (c) => (c === 0 ? left : right) }; } };
   w3.eval(script);
   await new Promise((r) => setTimeout(r, 50));
-  w3.postMessage({ type: "transcode", url: "vscode-resource:/x/own.mp3", name: "own.mp3" }, "*");
+  w3.postMessage({ type: "transcode", url: "vscode-resource:/x/own.mp3", name: "own.mp3", sourcePath: "C:/x/own.mp3", target: "add", chooseAfter: true }, "*");
   await new Promise((r) => setTimeout(r, 400));
   const t = posted3.find((m) => m.type === "transcoded");
+  ok("the transcoded message echoes sourcePath, target and chooseAfter for the extension to file it", !!t && t.sourcePath === "C:/x/own.mp3" && t.target === "add" && t.chooseAfter === true, JSON.stringify(t && { sourcePath: t.sourcePath, target: t.target, chooseAfter: t.chooseAfter }));
   let hdr = null;
   if (t) {
     const b = Buffer.from(t.base64, "base64");

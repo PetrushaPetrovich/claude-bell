@@ -6,7 +6,7 @@ Chime in your VS Code window when Claude Code finishes its turn or waits for you
 
 ![Claude Bell panel in the VS Code bottom panel, next to Terminal](https://raw.githubusercontent.com/PetrushaPetrovich/claude-bell/main/vscode-extension/media/panel.png)
 
-The **Claude Bell** tab lives in the bottom Panel next to Terminal: pick a sound card, preview it with ▶, choose your own file, set the volume. / Вкладка **Claude Bell** живёт в нижней панели рядом с Terminal: выберите карточку звука, послушайте по ▶, подключите свой файл, задайте громкость.
+The **Claude Bell** tab lives in the bottom Panel next to Terminal: pick a sound card, preview it with ▶, add your own with **+**, set the volume. / Вкладка **Claude Bell** живёт в нижней панели рядом с Terminal: выберите карточку звука, послушайте по ▶, добавьте свои через **+**, задайте громкость.
 
 ## Why Claude Bell / Почему это расширение
 
@@ -14,13 +14,13 @@ The **Claude Bell** tab lives in the bottom Panel next to Terminal: pick a sound
 - **Works on Linux.** The chimes are synthesized in the window, no system sound packages needed.
 - **Self-contained.** Installs its own Claude Code hook; nothing else to install, no local server, no ports.
 - **No telemetry, no auto-approve.** Nothing leaves your machine; your Claude Code permission settings are never touched.
-- **Your own sound.** Pick any .wav / .mp3 / .ogg / .flac, or one of four built-in chimes, with a preview for each. Your file is converted once, automatically, into a normalized mono WAV (silence trimmed, volume leveled) so it plays through the OS player on every system without a click; the copy refreshes itself when the file changes.
+- **Your own sounds, as a library.** Every audio file in your sounds folder (`~/.claude/claude-bell/sounds`, or `claudeBell.soundsFolder`) is a card in the panel. **+** picks files and converts them once into normalized mono WAV (silence trimmed, volume leveled) so they play through the OS player on every system without a click; files you drop into the folder by hand show up too; **×** on a card deletes the file after a confirm.
 
 - **Звенит по SSH, в Remote и WSL.** Другие расширения играют звук через операционную систему той машины, где работает расширение; на удалённом Linux-сервере это тишина. Claude Bell играет внутри вашего окна VS Code, где бы ни работал Claude Code.
 - **Работает на Linux.** Звуки синтезируются в окне, системные звуковые пакеты не нужны.
 - **Самодостаточное.** Само ставит хук в Claude Code; ни локального сервера, ни портов, ничего ставить дополнительно.
 - **Без телеметрии и автоодобрения.** Ничего не уходит с вашей машины; настройки разрешений Claude Code не трогаются.
-- **Свой звук.** Любой .wav / .mp3 / .ogg / .flac или один из четырёх встроенных, каждый можно послушать заранее. Ваш файл один раз автоматически перекодируется в выровненный моно WAV (тишина по краям обрезана, громкость нормализована), чтобы играть системным плеером на любой системе без клика; копия обновляется сама при изменении файла.
+- **Свои звуки как библиотека.** Каждый аудиофайл в папке звуков (`~/.claude/claude-bell/sounds` или `claudeBell.soundsFolder`) становится плиткой в панели. **+** выбирает файлы и один раз перекодирует их в выровненный моно WAV (тишина обрезана, громкость нормализована), чтобы они играли системным плеером на любой системе без клика; файлы, положенные в папку вручную, тоже появляются; **×** на плитке удаляет файл после подтверждения.
 
 ## Self-contained / Ничего больше не нужно
 
@@ -47,8 +47,9 @@ Commands: **Claude Bell: Install hook into Claude Code** and **Claude Bell: Remo
 ## Commands and settings / Команды и настройки
 
 - `Claude Bell: Play test chime` — hear it now. / Послушать сейчас.
+- `Claude Bell: Add a sound file to your sounds` — the same as **+** in the panel. / То же, что **+** в панели.
 - `Claude Bell: Enable / Disable` — also the bell in the status bar. / Также колокольчик в строке состояния.
-- `claudeBell.volume` (0–1), `claudeBell.enabled`, `claudeBell.signalFile`.
+- `claudeBell.volume` (0–1), `claudeBell.enabled`, `claudeBell.soundsFolder`, `claudeBell.signalFile`.
 
 Keep the **Claude Bell** view open in the Panel (any Panel tab may be active). If the panel says sound is locked, click **Enable sound** once.
 

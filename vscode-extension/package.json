@@ -2,7 +2,7 @@
   "name": "claude-bell",
   "displayName": "Claude Bell",
   "description": "Chime in your VS Code window when Claude Code finishes its turn or waits for you — works over SSH, Remote and WSL, because the sound plays on your machine, not on the server. Self-contained (installs its own Claude Code hook), no telemetry, Linux included.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "PetrushaPetrovich",
   "icon": "media/icon.png",
   "license": "MIT",
@@ -62,8 +62,12 @@
         "title": "Claude Bell: Enable / Disable"
       },
       {
+        "command": "claudeBell.addSound",
+        "title": "Claude Bell: Add a sound file to your sounds"
+      },
+      {
         "command": "claudeBell.pickSoundFile",
-        "title": "Claude Bell: Choose your own sound file"
+        "title": "Claude Bell: Add a sound file to your sounds (alias)"
       },
       {
         "command": "claudeBell.installHook",
@@ -85,26 +89,17 @@
         "claudeBell.sound": {
           "type": "string",
           "default": "desk",
-          "enum": [
-            "desk",
-            "desk-double",
-            "soft",
-            "classic",
-            "file"
-          ],
-          "enumDescriptions": [
-            "Reception desk bell, one strike",
-            "Reception desk bell, two strikes",
-            "Soft chime, two gentle notes",
-            "Classic two-tone",
-            "Your own file from claudeBell.soundFile"
-          ],
-          "description": "Which chime to play. Preview and pick in the Claude Bell panel."
+          "description": "Which sound to play: desk, desk-double, soft, classic, or custom:<file name> for a sound from your sounds folder. Pick it in the Claude Bell panel."
+        },
+        "claudeBell.soundsFolder": {
+          "type": "string",
+          "default": "",
+          "description": "Your sound library folder on the machine where Claude Code runs. Every audio file in it is a card in the panel; + adds files (converted to WAV), × deletes them. Empty means ~/.claude/claude-bell/sounds."
         },
         "claudeBell.soundFile": {
           "type": "string",
           "default": "",
-          "description": "Your own .wav / .mp3 / .ogg to play when claudeBell.sound is \"file\". The file must live on the machine where Claude Code runs (over SSH: on the remote host). Pick it with “Choose file…” in the Claude Bell panel."
+          "description": "Legacy: a file set here is imported into your sounds folder on the next start and the setting is cleared."
         },
         "claudeBell.volume": {
           "type": "number",
