@@ -6,7 +6,7 @@ Chime in your VS Code window when Claude Code finishes its turn or waits for you
 
 ![Claude Bell panel in the VS Code bottom panel, next to Terminal](https://raw.githubusercontent.com/PetrushaPetrovich/claude-bell/main/vscode-extension/media/panel.png)
 
-The **Claude Bell** tab lives in the bottom Panel next to Terminal: pick a sound card, preview it with ▶, add your own with **+**, set the volume. / Вкладка **Claude Bell** живёт в нижней панели рядом с Terminal: выберите карточку звука, послушайте по ▶, добавьте свои через **+**, задайте громкость.
+The **Claude Bell** tab lives in the bottom Panel next to Terminal: pick a sound card, preview it with ▶, add your own with **+** (they appear as cards you can delete with ×), set the volume. / Вкладка **Claude Bell** живёт в нижней панели рядом с Terminal: выберите карточку звука, послушайте по ▶, добавьте свои через **+** (они появятся плитками, которые можно удалить крестиком), задайте громкость.
 
 ## Why Claude Bell / Почему это расширение
 
