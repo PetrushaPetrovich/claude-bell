@@ -6,7 +6,7 @@ Chime in your VS Code window when Claude Code finishes its turn or waits for you
 
 ![Claude Bell panel in the VS Code bottom panel, next to Terminal](https://raw.githubusercontent.com/PetrushaPetrovich/claude-bell/main/vscode-extension/media/panel.png)
 
-The **Claude Bell** tab lives in the bottom Panel next to Terminal: pick a sound card, preview it with ▶, add your own with **+** (they appear as cards you can delete with ×), set the volume. / Вкладка **Claude Bell** живёт в нижней панели рядом с Terminal: выберите карточку звука, послушайте по ▶, добавьте свои через **+** (они появятся плитками, которые можно удалить крестиком), задайте громкость.
+The **Claude Bell** tab lives in the bottom Panel next to Terminal (it does not open by itself in a local window — open it from the Panel tabs when you want it): pick a sound card, preview it with ▶, add your own with **+** (they appear as cards you can delete with ×), set the volume. / Вкладка **Claude Bell** живёт в нижней панели рядом с Terminal (в локальном окне она сама не открывается — откройте её из вкладок панели, когда нужна): выберите карточку звука, послушайте по ▶, добавьте свои через **+** (они появятся плитками, которые можно удалить крестиком), задайте громкость.
 
 ## Why Claude Bell / Почему это расширение
 
@@ -51,7 +51,7 @@ Commands: **Claude Bell: Install hook into Claude Code** and **Claude Bell: Remo
 - `Claude Bell: Enable / Disable` — also the bell in the status bar. / Также колокольчик в строке состояния.
 - `claudeBell.volume` (0–1), `claudeBell.enabled`, `claudeBell.soundsFolder`, `claudeBell.signalFile`.
 
-Keep the **Claude Bell** view open in the Panel (any Panel tab may be active). If the panel says sound is locked, click **Enable sound** once.
+In a local window the panel may stay closed: the chime plays through your operating system. In a remote window (SSH, WSL) the extension opens the **Claude Bell** view once at startup — keep it open (any Panel tab may be active) and click **Enable sound** once if the panel says sound is locked.
 
 ## Remote windows / Удалённые окна
 
@@ -70,4 +70,4 @@ If a play fails (a missing or unreadable file, a broken player), the ring is rep
 2. View → Output → choose **Claude Bell** in the dropdown: every signal, ring and skip is logged there. / В Output выберите канал **Claude Bell**: там каждая строка сигнала и каждый звонок.
 3. `~/.claude/.claude-bell-last` on the Claude Code machine shows the hook's last ring; `"code":"extension"` means the hook handed the sound to this extension. / Файл на машине Claude Code показывает последний вызов хука.
 
-Держите вид **Claude Bell** открытым в нижней панели (активной может быть любая вкладка). Если панель пишет, что звук заблокирован, один раз нажмите **Enable sound**.
+В локальном окне панель может быть закрыта: звук играет операционная система. В удалённом окне (SSH, WSL) расширение само открывает вид **Claude Bell** один раз при старте — держите его открытым (активной может быть любая вкладка) и, если панель пишет, что звук заблокирован, один раз нажмите **Enable sound**.
